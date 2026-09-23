@@ -1,0 +1,14 @@
+# colcon / ROS2 build artifacts (live one level up, in the workspace root,
+# but ignored here too in case anything gets built in-tree)
+build/
+install/
+log/
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# editor/IDE cruft
+.vscode/
+*.vc.db*
