@@ -57,11 +57,19 @@ class DifferentialOdometryNode(Node):
         self.start_node_()
     
     def start_node_(self):
+        self.x = 0.0
+        self.y = 0.0
+        self.theta = 0.0
+        self.v = 0.0
+        self.omega = 0.0
+        self.stamp = self.get_clock().now().to_msg()
+
         self.tf_broadcaster = TransformBroadcaster(self)
         self.pub_odom = self.create_publisher(Odometry, '/odom', 10)
         self.sub_joint = self.create_subscription(JointState, '/joint_states', self.on_joint_states, 10)
 
         self.get_logger().info("Init OK")
+
 
     def on_joint_states(self, msg):
         if not self.initialized:
@@ -117,7 +125,16 @@ class DifferentialOdometryNode(Node):
 
     def publish_tf(self):
         tf_stamped = TransformStamped()
+        tf_stamped.header.stamp = self.stamp
+        tf_stamped.header.frame_id = self.parent_frame_id
+        tf_stamped.child_frame_id = self.frame_id
+        tf_stamped.transform.translation.x = float(self.x)
+        tf_stamped.transform.translation.y = float(self.y)
+        tf_stamped.transform.translation.z = 0.0
+        tf_stamped.transform.rotation.w = float(np.cos(self.theta / 2))
+        tf_stamped.transform.rotation.z = float(np.sin(self.theta / 2))
         self.tf_broadcaster.sendTransform(tf_stamped)
+
 
 
 def main(args=None):

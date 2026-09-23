@@ -30,7 +30,6 @@ setup(
         'console_scripts': [
             'odometry = rota_robmob.odometry_node:main',
             'mapper = rota_robmob.mapper_node:main',
-            'goal_pose = rota_robmob.goal_pose_node:main',
         ],
     },
 )
