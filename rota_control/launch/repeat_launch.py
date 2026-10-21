@@ -32,10 +32,10 @@ def generate_launch_description():
         default_value='/scan',
         description='Topic name for live 2D LiDAR scans'
     )
-    declare_use_stamped_vel = DeclareLaunchArgument(
-        'use_stamped_vel',
-        default_value='true',
-        description='Publish TwistStamped instead of Twist (required for ROS 2 Jazzy Gazebo)'
+    declare_cmd_vel_type = DeclareLaunchArgument(
+        'cmd_vel_type',
+        default_value='auto',
+        description="Velocity message type: 'auto' (match the /cmd_vel subscriber), 'twist' or 'twist_stamped'"
     )
     declare_start_odometry = DeclareLaunchArgument(
         'start_odometry',
@@ -59,7 +59,7 @@ def generate_launch_description():
             'cmd_vel_topic': LaunchConfiguration('cmd_vel_topic'),
             'odom_topic': LaunchConfiguration('odom_topic'),
             'scan_topic': LaunchConfiguration('scan_topic'),
-            'use_stamped_vel': LaunchConfiguration('use_stamped_vel'),
+            'cmd_vel_type': LaunchConfiguration('cmd_vel_type'),
             'k_rho': 2.5,
             'k_alpha': 6.0,
             'k_beta': -1.2,
@@ -111,7 +111,7 @@ def generate_launch_description():
         declare_cmd_vel_topic,
         declare_odom_topic,
         declare_scan_topic,
-        declare_use_stamped_vel,
+        declare_cmd_vel_type,
         declare_start_odometry,
         declare_rviz,
         rota_odometry_node,

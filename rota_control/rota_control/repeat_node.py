@@ -8,27 +8,11 @@ from typing import Optional, Tuple
 
 import numpy as np
 
-# Robust import for open3d with automatic .venv detection
-try:
-    import open3d as o3d
-except ImportError:
-    import sys
-    candidates = [
-        os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../.venv/lib/python3.12/site-packages')),
-        os.path.abspath(os.path.join(os.getcwd(), '.venv/lib/python3.12/site-packages')),
-        os.path.expanduser('~/Documents/robotica_ws/src/marauder/.venv/lib/python3.12/site-packages'),
-    ]
-    for c in candidates:
-        if os.path.isdir(c) and c not in sys.path:
-            sys.path.insert(0, c)
-    try:
-        import open3d as o3d
-    except ImportError:
-        o3d = None
+import open3d as o3d
 
 import rclpy
 
-from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, TransformStamped, Twist, TwistStamped
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, TransformStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -36,7 +20,8 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
-from tf_transformations import euler_from_matrix, euler_from_quaternion, quaternion_from_euler
+from rota_common.cmd_vel import CmdVelPublisher
+from rota_common.transformations import euler_from_matrix, euler_from_quaternion, quaternion_from_euler
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -152,7 +137,7 @@ class RepeatNode(Node):
         self.declare_parameter('cmd_vel_topic', '/cmd_vel')
         self.declare_parameter('odom_topic', '/odom')
         self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('use_stamped_vel', True)
+        self.declare_parameter('cmd_vel_type', 'auto')  # auto | twist | twist_stamped
         self.declare_parameter('control_frequency', 20.0)
 
         # Controller gains & limits
@@ -179,7 +164,7 @@ class RepeatNode(Node):
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.odom_topic = str(self.get_parameter('odom_topic').value)
         self.scan_topic = str(self.get_parameter('scan_topic').value)
-        self.use_stamped_vel = bool(self.get_parameter('use_stamped_vel').value)
+        self.cmd_vel_type = str(self.get_parameter('cmd_vel_type').value)
         self.control_frequency = float(self.get_parameter('control_frequency').value)
 
         self.k_rho = float(self.get_parameter('k_rho').value)
@@ -213,10 +198,7 @@ class RepeatNode(Node):
         self.load_trajectory()
 
         # Publishers & Subscribers
-        if self.use_stamped_vel:
-            self.pub_cmd_vel = self.create_publisher(TwistStamped, self.cmd_vel_topic, 10)
-        else:
-            self.pub_cmd_vel = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.pub_cmd_vel = CmdVelPublisher(self, self.cmd_vel_topic, self.cmd_vel_type)
 
         self.pub_markers = self.create_publisher(MarkerArray, '/repeat/markers', 10)
         self.pub_taught_path = self.create_publisher(Path, '/repeat/taught_path', 10)
@@ -245,7 +227,7 @@ class RepeatNode(Node):
         self.get_logger().info(
             f"RepeatNode initialized:\n"
             f"  trajectory: '{self.trajectory_file}' ({len(self.keyframes)} anchors)\n"
-            f"  cmd_vel: '{self.cmd_vel_topic}' (use_stamped_vel={self.use_stamped_vel})\n"
+            f"  cmd_vel: '{self.cmd_vel_topic}' (cmd_vel_type={self.cmd_vel_type})\n"
             f"  gains: k_rho={self.k_rho}, k_alpha={self.k_alpha}, k_beta={self.k_beta}\n"
             f"  active: {self.is_active}"
         )
@@ -503,18 +485,7 @@ class RepeatNode(Node):
         )
 
     def publish_velocity(self, v: float, omega: float):
-        if self.use_stamped_vel:
-            msg = TwistStamped()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = 'base_link'
-            msg.twist.linear.x = float(v)
-            msg.twist.angular.z = float(omega)
-            self.pub_cmd_vel.publish(msg)
-        else:
-            msg = Twist()
-            msg.linear.x = float(v)
-            msg.angular.z = float(omega)
-            self.pub_cmd_vel.publish(msg)
+        self.pub_cmd_vel.publish(v, omega)
 
     def publish_zero_velocity(self):
         self.publish_velocity(0.0, 0.0)

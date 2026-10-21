@@ -2,7 +2,7 @@
 
 *Leaves a trail, walks it back.*
 
-ROS 2 (Jazzy) packages built for a mobile robotics course, covering wheel
+ROS 2 packages (Humble and Jazzy) built for a mobile robotics course, covering wheel
 odometry, LiDAR occupancy-grid mapping, ICP scan-matching odometry, and
 Teach-and-Repeat differential-drive autonomous navigation.
 
@@ -16,6 +16,7 @@ directories (colcon regenerates those) — see [Setup](#setup) below.
 |---|---|---|
 | [`rota_robmob`](rota_robmob) | `odometry`, `mapper` | Differential-drive wheel odometry (SE(2) pose from encoder/joint data, published as `nav_msgs/Odometry`) and LiDAR-based occupancy-grid mapping (`nav_msgs/OccupancyGrid`) from `sensor_msgs/LaserScan`. |
 | [`rota_icp`](rota_icp) | `lidar_odometry` | LiDAR odometry via point-to-point ICP (Open3D), aligning consecutive 2D scans to estimate relative motion. |
+| [`rota_common`](rota_common) | — | Shared helpers: pure-NumPy replacements for `tf_transformations`, and a `/cmd_vel` publisher that sends `Twist` or `TwistStamped` to match the robot/simulator. |
 | [`rota_control`](rota_control) | `diff_control_node`, `teach_node`, `repeat_node` | Teach-and-Repeat navigation system: records anchor keyframes during demonstration and autonomously repeats the trajectory by closing the loop on relative pose error via Open3D ICP scan matching and differential-drive kinematic control. |
 
 Course material and assignment briefs for each package live under
@@ -25,6 +26,13 @@ reference papers behind Teach-and-Repeat and Lie-group theory
 
 ## Setup
 
+Works on **ROS 2 Humble** (Ubuntu 22.04, Python 3.10) and **ROS 2 Jazzy**
+(Ubuntu 24.04, Python 3.12). In the commands below, replace `<distro>` with
+`humble` or `jazzy`.
+
+> The laptop and the robot must run the **same** distro: Humble and Jazzy do not
+> reliably talk to each other over DDS.
+
 Clone this repo into the `src/` directory of your colcon workspace:
 
 ```bash
@@ -33,29 +41,55 @@ git clone <this-repo-url> marauder
 cd ..
 ```
 
-### Python Virtual Environment (`uv`)
-
-Create a virtual environment with system site packages enabled (so ROS 2 Jazzy bindings like `rclpy` are accessible) and install `open3d`:
+### ROS dependencies (rosdep)
 
 ```bash
-# Using uv (recommended)
-uv venv --python /usr/bin/python3 --system-site-packages .venv
-source .venv/bin/activate
-uv pip install open3d
+source /opt/ros/<distro>/setup.bash
+rosdep install --from-paths src --ignore-src -y
 ```
 
-### Build & Run Tests
+For simulation, also install the TurtleBot3 packages (Gazebo Classic on Humble,
+Gazebo/gz on Jazzy):
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source .venv/bin/activate
+sudo apt install ros-<distro>-turtlebot3-gazebo ros-<distro>-turtlebot3-teleop
+```
 
-colcon build --symlink-install
+### Python dependencies (venv)
+
+Python packages that ROS doesn't provide (`open3d`, plus `matplotlib` for the
+example script) are listed in [`requirements.txt`](requirements.txt). Install
+them in a venv at `src/marauder/.venv` that is built on the system Python and can
+see the ROS packages (`--system-site-packages`). `numpy` is pinned to `<2` to
+match what the ROS packages were built against.
+
+From the workspace root:
+
+```bash
+source /opt/ros/<distro>/setup.bash
+python3 -m venv --system-site-packages src/marauder/.venv
+source src/marauder/.venv/bin/activate
+pip install -r src/marauder/requirements.txt
+touch src/marauder/.venv/COLCON_IGNORE   # keep colcon out of the venv
+```
+
+(On Ubuntu, `python3 -m venv` needs `sudo apt install python3-venv`.)
+
+### Build
+
+From the workspace root, **with the venv active**:
+
+```bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
+
+python -m colcon build --symlink-install
 source install/setup.bash
-
-# Run unit tests
-python3 -m pytest src/marauder/rota_control/test/test_tnr.py -v
 ```
+
+Use `python -m colcon` (not plain `colcon`): it makes the installed nodes start
+with `#!/usr/bin/env python3`, so they run in the venv and find `open3d`.
+**Activate the venv in every terminal where you run the nodes.**
 
 ---
 
@@ -68,7 +102,8 @@ The Teach-and-Repeat pipeline operates entirely without a global metric SLAM map
 From the workspace root (`~/Documents/robotica_ws`):
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Launches Gazebo world, TurtleBot3 Burger, RViz, and teleop keyboard
@@ -80,9 +115,9 @@ ros2 launch rota_robmob turtlebot3_simulation_environment_launch.py
 From the workspace root (`~/Documents/robotica_ws`):
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
 source install/setup.bash
-source .venv/bin/activate
 
 # Launch the Teach recorder (optionally pass rviz:=true to view teach.rviz)
 ros2 launch rota_control teach_launch.py rviz:=true
@@ -97,9 +132,9 @@ ros2 launch rota_control teach_launch.py rviz:=true
 From the workspace root (`~/Documents/robotica_ws`):
 
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
 source install/setup.bash
-source .venv/bin/activate
 
 # Launch autonomous trajectory tracking with repeat.rviz
 ros2 launch rota_control repeat_launch.py rviz:=true
@@ -158,10 +193,11 @@ When transitioning from Gazebo simulation to a physical **TurtleBot 4** (iRobot 
 3. **Base Odometry (`start_odometry:=false`)**:
    * The Create 3 base automatically computes fused wheel odometry and broadcasts `odom -> base_link` on `/odom`. Keep `start_odometry:=false` (default).
 4. **Velocity Commands (`/cmd_vel`)**:
-   * TurtleBot 4 in ROS 2 Jazzy accepts `geometry_msgs/msg/TwistStamped` on `/cmd_vel` (`use_stamped_vel:=true`, default).
-   * For keyboard teleoperation during the Teach phase, launch `teleop_twist_keyboard` with stamped mode:
+   * `repeat_node` and `diff_control_node` take `cmd_vel_type:=auto|twist|twist_stamped` (default `auto`). In `auto` they look at what is subscribed to `/cmd_vel` (the robot base or the simulator bridge) and send that type; until something subscribes, nothing is sent.
+   * Typically: Humble Gazebo Classic and the Create 3 base expect `Twist`; the Jazzy Gazebo (gz) bridge expects `TwistStamped`. Check with `ros2 topic info /cmd_vel -v` and force a type if `auto` picks the wrong one.
+   * For keyboard teleoperation during the Teach phase, match the same type (`-p stamped:=true` for `TwistStamped`):
      ```bash
-     ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -p stamped:=true
+     ros2 run teleop_twist_keyboard teleop_twist_keyboard
      ```
      *(Or simply drive using the TurtleBot 4 Bluetooth joy controller).*
 5. **DDS Network Discovery**:
@@ -180,9 +216,9 @@ When transitioning from Gazebo simulation to a physical **TurtleBot 4** (iRobot 
 
 **1. Teach Phase on TurtleBot 4:**
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
 source install/setup.bash
-source .venv/bin/activate
 
 # Launch Teach node (with use_sim_time:=false)
 ros2 launch rota_control teach_launch.py use_sim_time:=false rviz:=true
@@ -191,9 +227,9 @@ Drive the robot manually along the path. Press `Ctrl+C` when done.
 
 **2. Repeat Phase on TurtleBot 4:**
 ```bash
-source /opt/ros/jazzy/setup.bash
+source /opt/ros/<distro>/setup.bash
+source src/marauder/.venv/bin/activate
 source install/setup.bash
-source .venv/bin/activate
 
 # Launch Repeat node (with use_sim_time:=false)
 ros2 launch rota_control repeat_launch.py use_sim_time:=false rviz:=true

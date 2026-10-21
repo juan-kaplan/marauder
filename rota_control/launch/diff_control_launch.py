@@ -27,10 +27,10 @@ def generate_launch_description():
         default_value='/goal_pose',
         description='Topic name for target goal pose'
     )
-    declare_use_stamped_vel = DeclareLaunchArgument(
-        'use_stamped_vel',
-        default_value='true',
-        description='Publish TwistStamped instead of Twist (required for ROS 2 Jazzy Gazebo)'
+    declare_cmd_vel_type = DeclareLaunchArgument(
+        'cmd_vel_type',
+        default_value='auto',
+        description="Velocity message type: 'auto' (match the /cmd_vel subscriber), 'twist' or 'twist_stamped'"
     )
 
     diff_control_node = Node(
@@ -43,7 +43,7 @@ def generate_launch_description():
             'cmd_vel_topic': LaunchConfiguration('cmd_vel_topic'),
             'odom_topic': LaunchConfiguration('odom_topic'),
             'goal_topic': LaunchConfiguration('goal_topic'),
-            'use_stamped_vel': LaunchConfiguration('use_stamped_vel'),
+            'cmd_vel_type': LaunchConfiguration('cmd_vel_type'),
             'k_rho': 3.0,
             'k_alpha': 8.0,
             'k_beta': -1.5,
@@ -59,6 +59,6 @@ def generate_launch_description():
         declare_cmd_vel_topic,
         declare_odom_topic,
         declare_goal_topic,
-        declare_use_stamped_vel,
+        declare_cmd_vel_type,
         diff_control_node,
     ])

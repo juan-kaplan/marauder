@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist, TwistStamped
+from geometry_msgs.msg import PoseStamped, Twist
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -13,7 +13,8 @@ from rclpy.time import Time
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from tf_transformations import euler_from_quaternion
+from rota_common.cmd_vel import CmdVelPublisher
+from rota_common.transformations import euler_from_quaternion
 
 
 def normalize_angle(angle: float) -> float:
@@ -77,8 +78,8 @@ class DiffControlNode(Node):
         self.declare_parameter('allow_reverse', False)
         self.declare_parameter('scale_linear_by_alpha', True)
 
-        # Velocity message type (TwistStamped required for ROS 2 Jazzy Gazebo bridge)
-        self.declare_parameter('use_stamped_vel', True)
+        # Velocity message type: auto (match /cmd_vel subscriber) | twist | twist_stamped
+        self.declare_parameter('cmd_vel_type', 'auto')
 
         # Load parameter values
         self.k_rho = float(self.get_parameter('k_rho').value)
@@ -98,7 +99,7 @@ class DiffControlNode(Node):
         self.control_frequency = float(self.get_parameter('control_frequency').value)
         self.allow_reverse = bool(self.get_parameter('allow_reverse').value)
         self.scale_linear_by_alpha = bool(self.get_parameter('scale_linear_by_alpha').value)
-        self.use_stamped_vel = bool(self.get_parameter('use_stamped_vel').value)
+        self.cmd_vel_type = str(self.get_parameter('cmd_vel_type').value)
 
         # State variables
         self.current_pose = None
@@ -110,10 +111,8 @@ class DiffControlNode(Node):
         self.tf_listener = TransformListener(self.tf_buffer, self)
 
         # Publishers & Subscribers
-        if self.use_stamped_vel:
-            self.pub_cmd_vel = self.create_publisher(TwistStamped, self.cmd_vel_topic, 10)
-        else:
-            self.pub_cmd_vel = self.create_publisher(Twist, self.cmd_vel_topic, 10)
+        self.pub_cmd_vel = CmdVelPublisher(self, self.cmd_vel_topic, self.cmd_vel_type,
+                                           frame_id=self.robot_frame)
         self.sub_goal = self.create_subscription(PoseStamped, self.goal_topic, self.on_goal_pose, 10)
         self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
 
@@ -245,18 +244,7 @@ class DiffControlNode(Node):
 
     def publish_velocity(self, v: float, omega: float):
         """Publishes velocity commands as either TwistStamped or Twist."""
-        if self.use_stamped_vel:
-            twist_stamped = TwistStamped()
-            twist_stamped.header.stamp = self.get_clock().now().to_msg()
-            twist_stamped.header.frame_id = self.robot_frame
-            twist_stamped.twist.linear.x = float(v)
-            twist_stamped.twist.angular.z = float(omega)
-            self.pub_cmd_vel.publish(twist_stamped)
-        else:
-            twist = Twist()
-            twist.linear.x = float(v)
-            twist.angular.z = float(omega)
-            self.pub_cmd_vel.publish(twist)
+        self.pub_cmd_vel.publish(v, omega)
 
     def publish_zero_velocity(self):
         """Publishes zero velocity to stop the robot."""

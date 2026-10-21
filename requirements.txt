@@ -1,0 +1,7 @@
+# Python packages ROS doesn't provide. Install into a venv created with
+# --system-site-packages (see README).
+open3d>=0.18
+# Keep NumPy 1.x to match what the ROS packages were built against.
+numpy>=1.21,<2
+# Only for rota_icp/scripts/example_open3d.py
+matplotlib

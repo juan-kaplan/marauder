@@ -34,21 +34,24 @@ Grading: encoders 4 pts · LiDAR 4 pts · mixed 2 pts.
 - [ ] **Wheel encoders on TB4**: decide between `/joint_states` (wheel angles) and `/wheel_ticks` (`irobot_create_msgs`, about 508.8 ticks/rev; verify)
   - [ ] Select wheels by joint **name**, not index
   - [ ] Correct wheel geometry (TB3 burger ≈ r 0.033 / sep 0.160; TB4 ≈ r 0.036 / sep 0.233; verify)
-- [ ] **Robot profile** (launch arg or params YAML: `robot:=tb3_sim|tb4`): topics/namespace, frames, wheel geometry, `use_stamped_vel`, `use_sim_time`
+- [ ] **Robot profile** (launch arg or params YAML: `robot:=tb3_sim|tb4`): topics/namespace, frames, wheel geometry, `cmd_vel_type`, `use_sim_time`
 - [ ] Default `use_sim_time:=false` for the TB4 profile (nodes that wait for a valid clock hang otherwise)
 - [ ] Verify against the TB4 bags:
   - [ ] Topic names / namespace
   - [ ] QoS of `/odom` and `/scan`
-  - [ ] `/cmd_vel` type (`Twist` vs `TwistStamped`)
+  - [ ] `/cmd_vel` type (`Twist` vs `TwistStamped`); `cmd_vel_type:=auto` now detects it, but confirm
   - [ ] `/tf_static` (LiDAR pose, `base_link` vs `base_footprint`)
 - [ ] (Minor) Teach: time-sync scan and pose when recording a keyframe
 
 ## 3. Environment / cleanup
 
-- [ ] ROS distro: this machine has Humble, the README says Jazzy. Make the laptop, robot and any Docker setup match
-- [ ] Remove the hardcoded `.venv` path hack in `repeat_node.py` (wrong workspace path)
-- [ ] Guard against `o3d is None` in Repeat (crashes in `do_icp`)
+- [x] Humble/Jazzy support: `rota_common` replaces `tf_transformations`, `cmd_vel_type:=auto`, venv + `requirements.txt` (verified on Humble)
+- [ ] Verify the build, tests and a sim run on a Jazzy machine
+- [ ] Make sure the laptop, robot and any Docker setup run the **same** distro
+- [x] Remove the hardcoded `.venv` path hack in `repeat_node.py` (wrong workspace path)
+- [x] Guard against `o3d is None` in Repeat: Open3D is now a hard import (fails at startup with a clear error)
 - [ ] Trajectory paths are relative to cwd (`data/trajectory.json`); make them explicit or absolute
+- [x] Declare ROS dependencies in every `package.xml` (rosdep works on both distros)
 - [ ] Package metadata: maintainer, descriptions, duplicated per-package LICENSE
 
 ## 4. Deliverables
