@@ -3,6 +3,10 @@
 Status review against `TP1.pdf` (Teach and Repeat on a differential-drive robot).
 Grading: encoders 4 pts · LiDAR 4 pts · mixed 2 pts.
 
+> The agreed architecture, interface contract and work split now live in
+> [`docs/tp1/arquitectura.md`](docs/tp1/arquitectura.md). Where section 1 below
+> disagrees with it (e.g. a single unified localization), the doc wins.
+
 ## Already done
 
 - [x] Teach: keyframe sampling by distance/angle (`tau_d`, `tau_theta`), saved to `trajectory.json` + `_scans.npz`

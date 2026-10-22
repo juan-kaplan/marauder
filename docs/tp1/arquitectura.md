@@ -1,0 +1,368 @@
+# Arquitectura Teach and Repeat (TP1)
+
+Diseño acordado para el TP1: un localizador local con tres modos y, por encima,
+una capa de Teach and Repeat que se relocaliza con ICP contra los keyframes
+enseñados. Incluye el contrato de interfaces, el plan de trabajo y el reparto
+entre tres personas.
+
+> Estado: **diseño**. Todavía no está implementado. El código actual de
+> `rota_control` sigue la estructura anterior; ver [`TODO.md`](../../TODO.md).
+
+## Índice
+
+1. [Idea](#idea)
+2. [Nodos y flujo de datos](#nodos-y-flujo-de-datos)
+3. [Árbol de TF](#árbol-de-tf)
+4. [Contrato de interfaces](#contrato-de-interfaces)
+5. [Algoritmos](#algoritmos)
+6. [Decisiones acordadas](#decisiones-acordadas)
+7. [Plan global](#plan-global)
+8. [Reparto entre tres personas](#reparto-entre-tres-personas)
+9. [Pendientes](#pendientes)
+
+## Idea
+
+Hay **dos capas de localización**:
+
+- **Capa 1, `localization_node`:** estima cuánto se movió el robot desde su
+  última referencia, con encoders, con LiDAR o con ambos. No sabe nada del mapa
+  y se usa igual en Teach y en Repeat.
+- **Capa 2, Teach and Repeat:** compara el scan actual con los scans guardados
+  en Teach. En Teach la usa `teach_node` para refinar las aristas entre
+  keyframes; en Repeat la usa `repeat_node` para saber dónde está el robot
+  respecto del keyframe que está siguiendo.
+
+En el Repeat, la odometría de la capa 1 cumple tres funciones: dar la
+estimación inicial del ICP, cubrir los momentos en que el ICP falla y
+actualizar la pose entre scans. La medición que manda siempre es el ICP contra
+el mapa. Es la estructura de Sprunk et al. (2013), que está en
+[`docs/clase4`](../clase4).
+
+## Nodos y flujo de datos
+
+```mermaid
+flowchart TD
+    robot["Robot o Gazebo<br/>/joint_states · /scan"]
+    loc["localization_node<br/>mode: encoders | lidar | mixed"]
+    teach["teach_node<br/>keyframes + aristas por ICP"]
+    repeat["repeat_node<br/>ICP contra keyframe k"]
+    map[("data/map/<br/>map.json · scans.npz")]
+    ctl["diff_control_node<br/>Siegwart → /cmd_vel"]
+
+    robot --> loc
+    loc -- "/localization/reference" --> teach
+    loc -- "TF odom → robot" --> repeat
+    teach --> map
+    map --> repeat
+    repeat -- "/repeat/setpoint" --> ctl
+    ctl -- "/cmd_vel" --> robot
+
+    classDef capa1 fill:#EEEDFB,stroke:#5B4FC4,color:#3C3489
+    classDef capa2 fill:#E2F4EE,stroke:#0E7660,color:#085041
+    classDef control fill:#FBEDE6,stroke:#B94E27,color:#712B13
+    class loc capa1
+    class teach,repeat capa2
+    class ctl control
+```
+
+`teach_node` y `repeat_node` también leen `/scan` directamente; no está
+dibujado para no cruzar flechas.
+
+## Árbol de TF
+
+```mermaid
+flowchart LR
+    odom --> reference --> base["base_link<br/>(robot_frame)"]
+    base --> cur[map_current_keyframe] --> next[map_next_keyframe]
+    base --> sp[setpoint]
+
+    classDef capa1 fill:#EEEDFB,stroke:#5B4FC4,color:#3C3489
+    classDef capa2 fill:#E2F4EE,stroke:#0E7660,color:#085041
+    class reference,base capa1
+    class cur,next,sp capa2
+```
+
+Es el árbol que pide la consigna. Funciona porque son dos localizaciones
+distintas: ningún frame tiene dos padres. Para que eso valga hay que **apagar
+la TF `odom → base_*` que publican Gazebo y el Create 3**.
+
+| Transformación | Quién | Qué representa |
+|---|---|---|
+| `odom → reference` | `localization_node` | Pose de la referencia actual del localizador. En Teach, la referencia es el último keyframe. |
+| `reference → base_link` | `localization_node` | Pose del robot respecto de esa referencia. Es lo mismo que `/rel_odom`. |
+| `base_link → map_current_keyframe` | `repeat_node` | Keyframe enseñado que se está siguiendo, visto desde el robot (inversa del resultado del ICP). |
+| `map_current_keyframe → map_next_keyframe` | `repeat_node` | Arista guardada en el mapa entre el keyframe k y el k+1. |
+| `base_link → setpoint` | `repeat_node` | Objetivo instantáneo del controlador: el keyframe k+1, o el k si es el último. |
+
+Las tres primeras filas del árbol (`odom → reference → base_link`) existen en
+Teach y en Repeat; el resto, solo en Repeat.
+
+En el TB3 el frame raíz del robot es `base_footprint`
+(`base_footprint → base_link → base_scan`), así que `robot_frame` vale
+`base_footprint` en simulación. En el TB4 hay que verificarlo en `/tf_static`.
+
+## Contrato de interfaces
+
+Esto es lo que hay que congelar el primer día. Con estos nombres y firmas
+fijos, cada persona puede trabajar por su lado sin pisarse.
+
+### Paquetes
+
+```text
+marauder/
+├── rota_common/            librería compartida, sin nodos
+│   ├── transformations.py  (ya existe)
+│   ├── cmd_vel.py          (ya existe)
+│   ├── se2.py  msgs.py  scan.py  icp.py  tnr_map.py
+├── rota_localization/      NUEVO · capa 1
+│   └── localization_node.py
+├── rota_control/           capa 2 + control
+│   ├── teach_node.py  repeat_node.py  diff_control_node.py
+│   ├── launch/   tnr_sim_launch.py  teach_launch.py  repeat_launch.py
+│   ├── config/   tb3_sim.yaml  tb4.yaml  tnr_bridge.yaml  teach.rviz  repeat.rviz
+│   └── scripts/  plot_teach_vs_repeat.py
+├── rota_icp/  rota_robmob/ TPs de clase anteriores: no se tocan
+```
+
+### `rota_common` (librería)
+
+Convención: una pose es `(x, y, θ)`; `compose(a, b) = a ⊕ b` y
+`between(a, b) = a⁻¹ ⊕ b`, que es la pose de `b` vista desde `a`.
+
+```text
+se2.py      normalize_angle(a) · compose(a, b) · inverse(a) · between(a, b) · norm(a)
+            to_matrix(p) → 4x4 · from_matrix(T) → (x, y, θ)
+            yaw_from_quaternion(q) · quaternion_from_yaw(yaw)
+msgs.py     pose_to_msg(p) · pose_from_msg(msg) · pose_stamped(stamp, frame, p)
+            transform_stamped(stamp, parent, child, p) · pose_from_transform(msg)
+scan.py     scan_to_points(msg, rmin, rmax) → (N, 2) en el frame del LiDAR
+            ScanProjector(node, tf_buffer, robot_frame, rmin, rmax)(msg) → (N, 2) en robot_frame | None
+icp.py      IcpParams(max_correspondence_distance=0.30, max_iterations=30, min_fitness=0.25)
+            align(source, target, guess, params) → IcpResult(pose, fitness, rmse, ok)
+            # pose = pose del robot de source en el frame del robot de target
+tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_icp_ok, points)
+            save(map_dir, keyframes, meta) · load(map_dir) → (meta, keyframes)
+            chain_poses(keyframes) → poses en el frame del keyframe 0
+```
+
+### `localization_node` (capa 1, Teach y Repeat)
+
+| | |
+|---|---|
+| Suscribe | `/joint_states` (encoders, mixed) · `/scan` (lidar, mixed) |
+| Publica | `/rel_odom` · `nav_msgs/Odometry`, frame `reference`, child `robot_frame` |
+| | `/localization/reference` · `PoseStamped` en `odom`, solo cuando se crea una referencia nueva. El stamp es el del mensaje del sensor que la creó. QoS reliable, depth 100. |
+| | `/localization/odom` · `Odometry` `odom → robot_frame`, para paths y gráficos |
+| TF | `odom → reference` · `reference → robot_frame` |
+| Parámetros | `mode` · `tau_d` 0.30 m · `tau_theta` 0.30 rad · `robot_frame` · `left_wheel_joint` / `right_wheel_joint` (por nombre) · `wheel_radius` · `wheel_separation` · `min/max_scan_range` · `icp_*` · `scan_timeout` (mixed) · `encoder_noise_*` (solo simulación) |
+
+### `teach_node` (capa 2, Teach)
+
+| | |
+|---|---|
+| Suscribe | `/localization/reference` · `/scan` (en un buffer de unos 50 scans) · `/localization/odom` (para el path) |
+| Publica | `/teach/path` (`Path` en `odom`) · `/teach/keyframes` (`MarkerArray`) |
+| Servicios | `~/save` (`Trigger`). También guarda al apagarse. |
+| Parámetros | `map_dir` (ruta absoluta en el log) · `robot_frame` · `min/max_scan_range` · `icp_*` |
+
+### `repeat_node` (capa 2, Repeat)
+
+| | |
+|---|---|
+| Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
+| Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` · `/repeat/markers` |
+| TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
+| Servicios | `~/start` · `~/stop` |
+| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `goal_tolerance` 0.08 m · `goal_angle_tolerance` 0.15 rad · `control_frequency` 20 Hz · `auto_start` · `icp_*` |
+
+### `diff_control_node` (control)
+
+| | |
+|---|---|
+| Suscribe | `goal_topic` = `/repeat/setpoint`. Si el frame del objetivo es `robot_frame`, toma la pose del robot como (0, 0, 0). Se mantiene el modo `/goal_pose` en `odom` de la clase 4. |
+| Publica | `/cmd_vel` (`cmd_vel_type:=auto`, como ya está) |
+| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `setpoint_timeout` (0.5 s) sin setpoint, frena. |
+
+### Mapa en disco (`data/map/`)
+
+```text
+map.json   { "robot_frame": "base_footprint", "mode": "encoders", "tau_d": 0.30, "tau_theta": 0.30,
+             "keyframes": [ { "id": 0, "stamp": 12.4, "pose_odom": [x, y, θ],
+                              "edge_from_prev": [dx, dy, dθ], "edge_fitness": 0.83,
+                              "edge_icp_ok": true, "num_points": 312 }, … ] }
+scans.npz  kf_0000, kf_0001, … → (N, 2) puntos en robot_frame
+```
+
+El Repeat sigue la cadena de `edge_from_prev`; `pose_odom` se usa solo para
+graficar.
+
+### Launches y simulación
+
+- `tnr_sim_launch.py`: mundo de gz, robot_state_publisher, spawn del TB3 y un
+  bridge propio (`tnr_bridge.yaml`) **sin** la entrada `tf`, además de teleop
+  opcional. En Humble, con Gazebo Classic, hay que poner `publish_odom_tf` en
+  false en el modelo.
+- `teach_launch.py mode:=… robot:=tb3_sim map_dir:=… rviz:=true` lanza
+  `localization_node`, `teach_node` y RViz.
+- `repeat_launch.py mode:=… robot:=tb3_sim map_dir:=… use_map_icp:=true rviz:=true`
+  lanza `localization_node`, `repeat_node`, `diff_control_node` y RViz.
+- `robot:=tb3_sim|tb4` carga `config/<robot>.yaml`: frames, joints de las
+  ruedas, geometría, tópicos y `use_sim_time`. En el TB4, apagar
+  `publish_odom_tfs` del Create 3.
+
+## Algoritmos
+
+### Localizador: los tres modos
+
+| Modo | Cómo actualiza `reference → robot` | Cuándo crea una referencia |
+|---|---|---|
+| `encoders` | Integra los deltas de las ruedas en cada `/joint_states`. | Cuando se supera `tau_d` o `tau_theta`. |
+| `lidar` | ICP del scan actual **contra el scan de la referencia**, no contra el scan anterior. Estimación inicial: la última `rel_odom` más la última velocidad (modelo de velocidad constante). | En un scan que supera el umbral; ese scan pasa a ser la referencia. |
+| `mixed` | Entre scans integra los encoders. Cuando llega un scan, corre ICP contra la referencia usando esa integración como estimación inicial. | En un scan que supera el umbral. Si no llegan scans durante `scan_timeout`, crea referencias sin scan, y el próximo scan vuelve a fijar la referencia. |
+
+```text
+nueva_referencia(stamp, puntos):
+    T_odom_ref = T_odom_ref ⊕ T_ref_robot      # la TF odom → robot no salta
+    T_ref_robot = identidad
+    publicar /localization/reference(stamp, T_odom_ref)
+```
+
+### Teach: un keyframe por referencia
+
+```text
+al llegar /localization/reference (stamp, pose_n):
+    scan_n = el scan del buffer más cercano a stamp   # si todavía no llegó, se espera al siguiente
+    puntos_n = ScanProjector(scan_n)
+    si hay keyframe anterior:
+        guess = between(pose_{n-1}, pose_n)            # de las poses de las referencias, no de /rel_odom
+        r = icp.align(puntos_n, puntos_{n-1}, guess)
+        arista = r.pose si r.ok, si no guess           # se guardan el fitness y edge_icp_ok
+    guardar Keyframe(n, stamp, pose_n, arista, puntos_n)
+```
+
+En modo lidar este ICP repite el último cálculo del localizador y sirve de
+control. En modo encoders es lo que hace que el mapa quede refinado por ICP.
+
+### Repeat: seguir la cadena de keyframes
+
+```text
+inicio: k = 0, T_kf_robot = identidad                  # se supone que arranca en el inicio del Teach
+
+por cada scan (t):
+    odom_t = TF odom → robot al tiempo t
+    guess  = T_kf_robot ⊕ between(odom_ultimo, odom_t)
+    si use_map_icp:
+        r = icp.align(puntos(scan), puntos_kf[k], guess)
+        T_kf_robot = r.pose si r.ok, si no guess
+    si no:
+        T_kf_robot = guess
+    odom_ultimo = odom_t
+    mientras k < N-1:
+        T_next_robot = between(arista[k+1], T_kf_robot)
+        si norm(T_next_robot) < advance_dist o T_next_robot.x ≥ 0:   # cerca del siguiente, o ya lo pasó
+            T_kf_robot = T_next_robot; k += 1                       # cambia de marco sin relocalizar
+        si no: salir
+
+a control_frequency:
+    pose = T_kf_robot ⊕ between(odom_ultimo, odom_ahora)
+    objetivo = arista[k+1] si k < N-1, si no identidad
+    setpoint = between(pose, objetivo)                 # en robot_frame
+    si k == N-1 y el robot está dentro de la tolerancia: setpoint = identidad (frena)
+    publicar setpoint y las TF
+```
+
+## Decisiones acordadas
+
+- **Keyframes del Teach = referencias del localizador.** Con los mismos
+  umbrales, `/rel_odom` es exactamente "la pose relativa al último keyframe",
+  como pide la consigna.
+- **El ICP es contra el scan de referencia, no contra el scan anterior.** Así
+  el error se acumula una vez por referencia y no una vez por scan.
+- **Las aristas del Teach se calculan siempre con ICP.** La calidad del mapa no
+  depende del modo. La estimación inicial sale de las poses de las dos
+  referencias.
+- **El Repeat usa del localizador solo el movimiento continuo.** Las
+  referencias propias del localizador durante el Repeat son internas. Como el
+  Repeat solo usa deltas, no depende del origen de `odom`.
+- **Setpoint = keyframe siguiente.** Es lo que pide la consigna y lo que hace
+  el código actual. Un lookahead sobre la cadena queda como mejora posible.
+- **El setpoint va en el frame del robot.** El controlador no necesita
+  localizarse. Con un setpoint identidad frena, y además hay un timeout de
+  seguridad.
+- **`use_map_icp:=false` como caso de referencia.** Permite mostrar cuánto
+  aporta el ICP contra el mapa y cómo deriva cada modo sin él.
+
+## Plan global
+
+| Etapa | Qué incluye | Resultado |
+|---|---|---|
+| **0. Contrato** | Congelar nombres de tópicos, frames y parámetros, el formato del mapa y las firmas de `rota_common` (este documento). Los tres juntos, el primer día. | Contrato acordado |
+| **1. Base** | `rota_common` con tests, el launch de simulación con el bridge sin `tf` y el modo encoders del localizador. | Un Teach con encoders graba un mapa |
+| **2. T&R con encoders** | `teach_node` con aristas por ICP, `repeat_node` completo y `diff_control_node` adaptado. | El robot repite en simulación · **4 pts** |
+| **3. Lidar y mixto** | Modo lidar con modelo de velocidad constante y modo mixto con `scan_timeout`. | Los tres modos funcionan en Teach y Repeat · **4 + 2 pts** |
+| **4. Evaluación, robot real y entrega** | Ground truth de Gazebo, ruido configurable en los encoders, gráficos de Teach vs Repeat por modo con y sin ICP de mapa, puesta en marcha en el TB4, README, presentación de 5 minutos y demo. | Entrega |
+
+## Reparto entre tres personas
+
+Cada persona es dueña de archivos distintos, así nadie edita el mismo archivo
+que otro. Las dependencias entre personas se reducen a las firmas del contrato.
+
+### Persona A: localización
+
+- `se2`, `msgs`, `scan` e `icp` con tests. Se entregan primero, el primer o
+  segundo día.
+- `localization_node`: encoders, después lidar, después mixto.
+- Ruido configurable en los encoders, para simulación.
+- TB4: joints de las ruedas por nombre, geometría y `/joint_states`.
+
+Archivos: `rota_common/{se2,msgs,scan,icp}.py` · `rota_localization/`
+
+### Persona B: Teach and Repeat
+
+- `tnr_map`: guardar, cargar y encadenar aristas.
+- `teach_node`: buffer de scans, avisos de referencia, aristas por ICP,
+  guardado y visualización.
+- `repeat_node`: ICP contra el keyframe, Δodom, avance, TF, setpoint y
+  `use_map_icp`.
+- Tests de la lógica pura: avance de keyframe y encadenamiento.
+
+Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py` ·
+`rota_control/test/`
+
+### Persona C: control e infraestructura
+
+- Launch de simulación y bridge sin `tf`, al principio porque todos lo
+  necesitan.
+- `diff_control_node`: setpoint en el frame del robot, identidad para frenar y
+  timeout.
+- Perfiles `tb3_sim`/`tb4`, `teach_launch`/`repeat_launch` y las
+  configuraciones de RViz.
+- Ground truth, script de gráficos y README. TB4: tópicos, QoS y TF del
+  Create 3.
+
+Archivos: `rota_control/diff_control_node.py` · `rota_control/launch/` ·
+`rota_control/config/` · `rota_control/scripts/` · `README.md`
+
+### Cómo se desbloquean entre sí
+
+1. Etapa 0 entre los tres. Después, A entrega la librería base y C el launch
+   de simulación lo antes posible.
+2. B escribe `tnr_map` y el esqueleto del Teach contra las firmas acordadas,
+   sin esperar la implementación.
+3. Con el modo encoders de A, B prueba Teach y Repeat de punta a punta
+   (etapa 2) mientras A sigue con lidar y mixto, y C con el controlador y la
+   evaluación.
+4. En la etapa 4 los tres corren los experimentos de cada modo y preparan la
+   presentación.
+
+## Pendientes
+
+- **Profesor:** ¿los 4/4/2 puntos se refieren al modo de la capa 1, con el ICP
+  de mapa activo en los tres?
+- **Profesor:** ¿suma mostrar el caso `use_map_icp:=false` en la comparación?
+- **Profesor:** `/rel_odom` lo publica `localization_node`, lanzado dentro de
+  `teach_launch.py`. ¿Cuenta como "el nodo de aprendizaje"?
+- **Equipo:** ¿renombrar `rota_control` a `rota_tnr`? Es solo prolijidad; por
+  defecto se mantiene.
+- **Equipo:** de qué tópico de gz sale el ground truth (pose del modelo) y cómo
+  se graba en cada corrida.
