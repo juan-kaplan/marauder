@@ -239,6 +239,11 @@ al llegar /localization/reference (stamp, pose_n):
         r = icp.align(puntos_n, puntos_{n-1}, guess)
         arista = r.pose si r.ok, si no guess           # se guardan el fitness y edge_icp_ok
     guardar Keyframe(n, stamp, pose_n, arista, puntos_n)
+
+al guardar el mapa (~/save o al apagarse):
+    pose_fin = última /localization/odom
+    si se movió ≥ 2 cm o 0.02 rad desde el último keyframe:
+        agregar al mapa un keyframe más en pose_fin, igual que los otros   # el tramo final no se pierde
 ```
 
 En modo lidar este ICP repite el último cálculo del localizador y sirve de
@@ -302,6 +307,13 @@ a control_frequency:
   que `advance_dist` siguen con la regla de distancia, para no frenar al robot
   si en una curva queda adelantado. El controlador no cambia: con el objetivo
   a menos de `dist_tolerance` ya gira en el lugar.
+- **El Teach guarda un keyframe más al final.** Agregado en el PR de Teach and
+  Repeat (persona B), para revisar. Las referencias salen cada `tau_d` o
+  `tau_theta`, así que el Teach casi siempre termina entre dos, y el tramo
+  posterior a la última referencia (hasta `tau_d`) no quedaba en el mapa. En
+  Gazebo, en modos lidar y mixed, faltaban 29 cm del final. Ahora, al guardar,
+  `teach_node` agrega un keyframe en la última pose de `/localization/odom`,
+  con su scan y su arista por ICP, si el robot se movió desde el último.
 - **El setpoint va en el frame del robot.** El controlador no necesita
   localizarse. Con un setpoint identidad frena, y además hay un timeout de
   seguridad.

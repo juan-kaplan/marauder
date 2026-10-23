@@ -13,6 +13,11 @@ Every reference of the localizer becomes a keyframe (see
   ICP fails, or a keyframe has no points, the guess is kept and
   ``edge_icp_ok`` is False.
 
+References only come every ``tau_d`` or ``tau_theta``, so the Teach usually
+ends between two of them. ``end_keyframe`` builds one more keyframe at the
+last pose of the localizer, for the map that is saved, so that the end of the
+path is not lost.
+
 Stamps are seconds as floats.
 """
 
@@ -28,10 +33,14 @@ from rota_common.tnr_map import Keyframe, Pose2D
 class TeachRecorder:
 
     def __init__(self, scan_buffer: int = 50, icp_max_distance: float = 0.30,
-                 icp_max_iterations: int = 30, icp_min_fitness: float = 0.25):
+                 icp_max_iterations: int = 30, icp_min_fitness: float = 0.25,
+                 end_min_dist: float = 0.02, end_min_angle: float = 0.02):
         self.icp_max_distance = icp_max_distance
         self.icp_max_iterations = icp_max_iterations
         self.icp_min_fitness = icp_min_fitness
+        # The end keyframe is only made if the robot moved this much since the last one.
+        self.end_min_dist = end_min_dist
+        self.end_min_angle = end_min_angle
         self.keyframes: List[Keyframe] = []
         # Seconds from each keyframe to the scan it got, None if it got none.
         self.scan_offsets: List[Optional[float]] = []
@@ -54,6 +63,23 @@ class TeachRecorder:
         """Complete every waiting reference with the closest scan there is (or none)."""
         return self._resolve(final=True)
 
+    def end_keyframe(self, stamp: float, pose: Sequence[float]) -> Optional[Keyframe]:
+        """
+        Build a keyframe at the localizer's last pose, without adding it.
+
+        It gets the closest buffered scan and an ICP edge from the last keyframe,
+        like any other. None if there are no keyframes yet, or if the robot is
+        within ``end_min_dist`` and ``end_min_angle`` of the last one.
+        """
+        if not self.keyframes:
+            return None
+        pose = tuple(float(v) for v in pose)
+        d = se2.between(self.keyframes[-1].pose_odom, pose)
+        if se2.norm(d) < self.end_min_dist and abs(d[2]) < self.end_min_angle:
+            return None
+        kf, _ = self._make(float(stamp), pose, self._closest_scan(stamp))
+        return kf
+
     def _resolve(self, final: bool) -> List[Keyframe]:
         done = []
         while self.pending:
@@ -61,7 +87,10 @@ class TeachRecorder:
             if not final and (not self.scans or self.scans[-1][0] < stamp):
                 break  # a closer scan may still come
             self.pending.popleft()
-            done.append(self._add(stamp, pose, self._closest_scan(stamp)))
+            kf, offset = self._make(stamp, pose, self._closest_scan(stamp))
+            self.keyframes.append(kf)
+            self.scan_offsets.append(offset)
+            done.append(kf)
         return done
 
     def _closest_scan(self, stamp: float) -> Optional[Tuple[float, np.ndarray]]:
@@ -69,8 +98,9 @@ class TeachRecorder:
             return None
         return min(self.scans, key=lambda s: abs(s[0] - stamp))
 
-    def _add(self, stamp: float, pose: Pose2D,
-             scan: Optional[Tuple[float, np.ndarray]]) -> Keyframe:
+    def _make(self, stamp: float, pose: Pose2D,
+              scan: Optional[Tuple[float, np.ndarray]]) -> Tuple[Keyframe, Optional[float]]:
+        """Next keyframe after the last one, and the seconds to its scan (None if no scan)."""
         points = scan[1] if scan is not None else np.empty((0, 2))
         kf = Keyframe(id=len(self.keyframes), stamp=stamp, pose_odom=pose, points=points)
         if self.keyframes:
@@ -81,6 +111,4 @@ class TeachRecorder:
             kf.edge_from_prev = edge if ok else guess
             kf.edge_fitness = fitness
             kf.edge_icp_ok = ok
-        self.keyframes.append(kf)
-        self.scan_offsets.append(None if scan is None else scan[0] - stamp)
-        return kf
+        return kf, None if scan is None else scan[0] - stamp

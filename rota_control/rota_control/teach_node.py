@@ -4,7 +4,9 @@ Teach phase of Teach and Repeat.
 
 Each /localization/reference becomes a keyframe with its scan, and the edge
 from the previous keyframe is refined by ICP (see teach_logic). The map is
-written to map_dir (map.json + scans.npz) on ~/save and on shutdown. Publishes
+written to map_dir (map.json + scans.npz) on ~/save and on shutdown, with one
+more keyframe at the last /localization/odom pose so that the stretch after
+the last reference is kept. Publishes
 /teach/path (the localizer's path in odom) and /teach/keyframes (the ICP chain
 of keyframes, anchored at the odom pose of keyframe 0).
 """
@@ -81,6 +83,7 @@ class TeachNode(Node):
         self.path = Path()
         self.path.header.frame_id = 'odom'
         self.last_path_pose = None
+        self.last_odom = None  # (stamp in seconds, pose) of the latest /localization/odom
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -139,6 +142,7 @@ class TeachNode(Node):
 
     def on_odom(self, msg):
         p = pose_from_msg(msg)
+        self.last_odom = (seconds(msg.header.stamp), p)
         if self.last_path_pose is not None:
             d = se2.between(self.last_path_pose, p)
             if se2.norm(d) < 0.02 and abs(d[2]) < 0.05:
@@ -169,10 +173,18 @@ class TeachNode(Node):
         self.pub_keyframes.publish(markers)
 
     def save(self):
-        keyframes = self.recorder.keyframes
+        keyframes = list(self.recorder.keyframes)
         if not keyframes:
             self.get_logger().warn("No keyframes yet, nothing to save")
             return False
+        end = self.recorder.end_keyframe(*self.last_odom) if self.last_odom else None
+        if end is not None:
+            keyframes.append(end)
+            x, y, theta = end.edge_from_prev
+            self.get_logger().info(
+                f"End keyframe #{end.id} at the last pose: {len(end.points)} points, "
+                f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
+                f"ICP {'ok' if end.edge_icp_ok else 'failed'} (fitness {end.edge_fitness:.2f})")
         tnr_map.save(self.map_dir, keyframes, self.meta)
         failed = sum(1 for kf in keyframes[1:] if not kf.edge_icp_ok)
         self.get_logger().info(f"Saved {len(keyframes)} keyframes ({failed} edges without ICP) "
