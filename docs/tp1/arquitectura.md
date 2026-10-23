@@ -164,7 +164,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | Suscribe | `/localization/reference` · `/scan` (en un buffer de unos 50 scans) · `/localization/odom` (para el path) |
 | Publica | `/teach/path` (`Path` en `odom`) · `/teach/keyframes` (`MarkerArray`) |
 | Servicios | `~/save` (`Trigger`). También guarda al apagarse. |
-| Parámetros | `map_dir` (ruta absoluta en el log) · `robot_frame` · `min/max_scan_range` · `icp_*` |
+| Parámetros | `map_dir` (ruta absoluta en el log) · `robot_frame` · `min/max_scan_range` · `icp_*` · `mode`, `tau_d`, `tau_theta` (solo para la metadata de `map.json`; tienen que coincidir con los de `localization_node`) |
 
 ### `repeat_node` (capa 2, Repeat)
 
