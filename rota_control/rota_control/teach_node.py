@@ -1,326 +1,198 @@
 #!/usr/bin/env python3
+"""
+Teach phase of Teach and Repeat.
 
-import json
+Each /localization/reference becomes a keyframe (see teach_logic). The map is
+saved to map_dir on ~/save and on shutdown, with one more keyframe at the last
+pose. Publishes /teach/path and /teach/keyframes.
+"""
+
 import math
 import os
-from typing import List, Tuple
 
 import numpy as np
 import rclpy
-from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
-
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
+from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
-from rota_common.se2 import quaternion_from_yaw, yaw_from_quaternion
+from tf2_ros import TransformException
+from tf2_ros.buffer import Buffer
+from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
+from rota_common import se2, tnr_map
+from rota_common.msgs import pose_from_msg, pose_from_transform, pose_stamped, pose_to_msg
+from rota_common.scan import scan_to_points
+from rota_control.teach_logic import TeachRecorder
 
-def normalize_angle(angle: float) -> float:
-    """Normalizes an angle strictly to (-pi, pi]."""
-    a = (angle + math.pi) % (2.0 * math.pi) - math.pi
-    if a <= -math.pi or math.isclose(a, -math.pi, abs_tol=1e-9):
-        return math.pi
-    return a
-
-
-def se2_minus(x_a: Tuple[float, float, float], x_b: Tuple[float, float, float]) -> Tuple[float, float, float]:
-    r"""
-    Computes relative transform x_a \ominus x_b (pose of A expressed in frame B).
-    x_b is reference, x_a is target.
-    """
-    xb, yb, thetab = x_b
-    xa, ya, thetaa = x_a
-    dx = xa - xb
-    dy = ya - yb
-    c = math.cos(thetab)
-    s = math.sin(thetab)
-    rel_x = c * dx + s * dy
-    rel_y = -s * dx + c * dy
-    rel_theta = normalize_angle(thetaa - thetab)
-    return (rel_x, rel_y, rel_theta)
+# Same QoS as localization_node, so the first reference is not lost.
+REFERENCE_QOS = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
+                           durability=DurabilityPolicy.TRANSIENT_LOCAL)
+MAX_SCAN_OFFSET = 0.1  # warn if a keyframe's scan is further than this from its reference
 
 
-def laser_scan_to_points(msg: LaserScan, range_min: float, range_max: float) -> np.ndarray:
-    """Converts a LaserScan message into a 2D array of (x, y) coordinates."""
-    points = []
-    angle = msg.angle_min
-    rmin = max(range_min, msg.range_min)
-    rmax = min(range_max, msg.range_max)
-
-    for r in msg.ranges:
-        if rmin <= r <= rmax and not math.isnan(r) and not math.isinf(r):
-            x = r * math.cos(angle)
-            y = r * math.sin(angle)
-            points.append([x, y])
-        angle += msg.angle_increment
-
-    if not points:
-        return np.empty((0, 2), dtype=np.float64)
-    return np.array(points, dtype=np.float64)
+def seconds(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
 
 
 class TeachNode(Node):
-    """
-    Node responsible for the Teach phase in Teach-and-Repeat navigation.
-    Subscribes to odometry and LiDAR scans, performs spatial/angular sampling,
-    and records keyframes (anchors) with relative transformations.
-    """
 
     def __init__(self):
         super().__init__('teach_node')
 
-        # Parameters
-        self.declare_parameter('odom_topic', '/odom')
-        self.declare_parameter('scan_topic', '/scan')
-        self.declare_parameter('tau_d', 0.30)           # linear distance threshold (meters)
-        self.declare_parameter('tau_theta', 0.30)       # angular threshold (radians, ~17 deg)
-        self.declare_parameter('min_scan_range', 0.12)  # LiDAR minimum range
-        self.declare_parameter('max_scan_range', 3.50)  # LiDAR maximum range
-        self.declare_parameter('output_file', 'data/trajectory.json')
-        self.declare_parameter('auto_record', True)
+        self.declare_parameter('map_dir', 'data/map')
+        self.declare_parameter('robot_frame', 'base_footprint')
+        self.declare_parameter('min_scan_range', 0.12)
+        self.declare_parameter('max_scan_range', 3.50)
+        self.declare_parameter('icp_max_distance', 0.30)
+        self.declare_parameter('icp_max_iterations', 30)
+        self.declare_parameter('icp_min_fitness', 0.25)
+        # Only written to map.json, should match localization_node's.
+        self.declare_parameter('mode', 'encoders')
+        self.declare_parameter('tau_d', 0.30)
+        self.declare_parameter('tau_theta', 0.30)
 
-        self.odom_topic = str(self.get_parameter('odom_topic').value)
-        self.scan_topic = str(self.get_parameter('scan_topic').value)
-        self.tau_d = float(self.get_parameter('tau_d').value)
-        self.tau_theta = float(self.get_parameter('tau_theta').value)
-        self.min_scan_range = float(self.get_parameter('min_scan_range').value)
-        self.max_scan_range = float(self.get_parameter('max_scan_range').value)
-        self.output_file = str(self.get_parameter('output_file').value)
-        self.is_recording = bool(self.get_parameter('auto_record').value)
+        self.map_dir = os.path.abspath(os.path.expanduser(self.get_parameter('map_dir').value))
+        self.robot_frame = self.get_parameter('robot_frame').value
+        self.min_range = self.get_parameter('min_scan_range').value
+        self.max_range = self.get_parameter('max_scan_range').value
+        self.meta = {
+            'robot_frame': self.robot_frame,
+            'mode': self.get_parameter('mode').value,
+            'tau_d': self.get_parameter('tau_d').value,
+            'tau_theta': self.get_parameter('tau_theta').value,
+        }
+        self.recorder = TeachRecorder(
+            icp_max_distance=self.get_parameter('icp_max_distance').value,
+            icp_max_iterations=self.get_parameter('icp_max_iterations').value,
+            icp_min_fitness=self.get_parameter('icp_min_fitness').value)
+        self.get_logger().info(f"map_dir={self.map_dir} robot_frame={self.robot_frame}")
 
-        # State
-        self.current_pose = None            # (x, y, theta)
-        self.last_keyframe_pose = None      # (x, y, theta)
-        self.latest_scan_msg = None
-        self.keyframes: List[dict] = []     # List of keyframe metadata & poses
-        self.keyframe_points = []           # List of 2D numpy arrays of points
+        self.mount = None      # robot_frame -> LiDAR, as (R, t)
+        self.last_odom = None  # (stamp, pose) of the latest /localization/odom
+        self.path = Path()
+        self.path.header.frame_id = 'odom'
+        self.last_path_pose = None
 
-        # Subscribers
-        self.sub_odom = self.create_subscription(Odometry, self.odom_topic, self.on_odom, 10)
-        self.sub_scan = self.create_subscription(LaserScan, self.scan_topic, self.on_scan, qos_profile_sensor_data)
-
-        # Publishers
-        self.pub_markers = self.create_publisher(MarkerArray, '/teach/markers', 10)
+        self.tf_buffer = Buffer()
+        self.tf_listener = TransformListener(self.tf_buffer, self)
         self.pub_path = self.create_publisher(Path, '/teach/path', 10)
-        self.path_msg = Path()
-        self.path_msg.header.frame_id = 'odom'
+        self.pub_keyframes = self.create_publisher(MarkerArray, '/teach/keyframes', 10)
+        self.create_subscription(PoseStamped, '/localization/reference', self.on_reference,
+                                 REFERENCE_QOS)
+        self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
+        self.create_subscription(Odometry, '/localization/odom', self.on_odom, 10)
+        self.create_service(Trigger, '~/save', self.on_save)
 
+    def on_reference(self, msg):
+        self.added(self.recorder.on_reference(seconds(msg.header.stamp), pose_from_msg(msg)))
 
-        # Services
-        self.srv_start = self.create_service(Trigger, '~/start_recording', self.on_start_recording)
-        self.srv_stop = self.create_service(Trigger, '~/stop_recording', self.on_stop_recording)
-        self.srv_save = self.create_service(Trigger, '~/save_trajectory', self.on_save_trajectory)
+    def on_scan(self, msg):
+        points = self.project(msg)
+        if points is not None:
+            self.added(self.recorder.on_scan(seconds(msg.header.stamp), points))
 
-        # Marker timer (1 Hz)
-        self.timer_markers = self.create_timer(1.0, self.publish_markers)
+    def on_odom(self, msg):
+        p = pose_from_msg(msg)
+        self.last_odom = (seconds(msg.header.stamp), p)
+        if self.last_path_pose is not None:
+            d = se2.between(self.last_path_pose, p)
+            if se2.norm(d) < 0.02 and abs(d[2]) < 0.05:
+                return
+        self.last_path_pose = p
+        self.path.header.stamp = msg.header.stamp
+        self.path.poses.append(pose_stamped(msg.header.stamp, 'odom', p))
+        self.pub_path.publish(self.path)
 
-        self.get_logger().info(
-            f"TeachNode initialized:\n"
-            f"  odom: '{self.odom_topic}', scan: '{self.scan_topic}'\n"
-            f"  tau_d={self.tau_d}m, tau_theta={self.tau_theta:.2f}rad\n"
-            f"  output_file: '{self.output_file}'\n"
-            f"  recording active: {self.is_recording}"
-        )
+    def project(self, msg):
+        """Scan points in robot_frame, using the static LiDAR mount."""
+        if self.mount is None:
+            try:
+                tf = self.tf_buffer.lookup_transform(self.robot_frame, msg.header.frame_id, Time())
+            except TransformException as ex:
+                self.get_logger().warn(
+                    f"No TF {self.robot_frame} -> {msg.header.frame_id} yet: {ex}",
+                    throttle_duration_sec=2.0)
+                return None
+            x, y, theta = pose_from_transform(tf)
+            c, s = math.cos(theta), math.sin(theta)
+            self.mount = (np.array([[c, -s], [s, c]]), np.array([x, y]))
+        R, t = self.mount
+        return scan_to_points(msg, self.min_range, self.max_range) @ R.T + t
 
-    def on_odom(self, msg: Odometry):
-        px = msg.pose.pose.position.x
-        py = msg.pose.pose.position.y
-        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
-        self.current_pose = (px, py, yaw)
+    def added(self, keyframes):
+        for kf in keyframes:
+            self.log_keyframe(kf, 'Keyframe')
+            offset = self.recorder.scan_offsets[kf.id]
+            if offset is None:
+                self.get_logger().warn(f"Keyframe #{kf.id} has no scan")
+            elif abs(offset) > MAX_SCAN_OFFSET:
+                self.get_logger().warn(f"Keyframe #{kf.id}: closest scan is {offset:+.3f} s away")
+        if keyframes:
+            self.publish_keyframes()
 
-        if not self.is_recording:
+    def log_keyframe(self, kf, label):
+        if kf.id == 0:
+            self.get_logger().info(f"{label} #0: {len(kf.points)} points")
             return
-
-        # Check if we should drop a new keyframe
-        if self.last_keyframe_pose is None:
-            # First keyframe
-            if self.latest_scan_msg is not None:
-                self.record_keyframe()
-        else:
-            dx = px - self.last_keyframe_pose[0]
-            dy = py - self.last_keyframe_pose[1]
-            dist = math.hypot(dx, dy)
-            dtheta = abs(normalize_angle(yaw - self.last_keyframe_pose[2]))
-
-            if dist >= self.tau_d or dtheta >= self.tau_theta:
-                self.record_keyframe()
-
-    def on_scan(self, msg: LaserScan):
-        self.latest_scan_msg = msg
-
-    def record_keyframe(self):
-        if self.current_pose is None or self.latest_scan_msg is None:
-            return
-
-        kf_id = len(self.keyframes)
-        px, py, yaw = self.current_pose
-        stamp = self.get_clock().now().nanoseconds * 1e-9
-
-        # Relative transform from previous keyframe
-        if kf_id == 0:
-            rel_transform = (0.0, 0.0, 0.0)
-        else:
-            rel_transform = se2_minus(self.current_pose, self.last_keyframe_pose)
-
-        # Convert scan to 2D Cartesian points
-        pts = laser_scan_to_points(self.latest_scan_msg, self.min_scan_range, self.max_scan_range)
-
-        kf_data = {
-            'id': kf_id,
-            'stamp': stamp,
-            'pose': [float(px), float(py), float(yaw)],
-            'rel_transform': [float(rel_transform[0]), float(rel_transform[1]), float(rel_transform[2])],
-            'num_points': int(len(pts))
-        }
-
-        self.keyframes.append(kf_data)
-        self.keyframe_points.append(pts)
-        self.last_keyframe_pose = self.current_pose
-
-        # Add to visualization Path
-        pose_stamped = PoseStamped()
-        pose_stamped.header.stamp = self.get_clock().now().to_msg()
-        pose_stamped.header.frame_id = 'odom'
-        pose_stamped.pose.position.x = float(px)
-        pose_stamped.pose.position.y = float(py)
-        pose_stamped.pose.position.z = 0.02
-        q = quaternion_from_yaw(float(yaw))
-        pose_stamped.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
-        self.path_msg.poses.append(pose_stamped)
-        self.path_msg.header.stamp = pose_stamped.header.stamp
-        self.pub_path.publish(self.path_msg)
-
+        x, y, theta = kf.edge_from_prev
         self.get_logger().info(
-            f"Anchor keyframe #{kf_id} recorded: pose=({px:.3f}, {py:.3f}, {yaw:.3f} rad), "
-            f"rel=({rel_transform[0]:.3f}, {rel_transform[1]:.3f}, {rel_transform[2]:.3f}), "
-            f"points={len(pts)}"
-        )
+            f"{label} #{kf.id}: {len(kf.points)} points, "
+            f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
+            f"ICP {'ok' if kf.edge_icp_ok else 'failed'} (fitness {kf.edge_fitness:.2f})")
+        if not kf.edge_icp_ok:
+            self.get_logger().warn(f"{label} #{kf.id}: ICP failed, edge from the localizer")
 
-        self.publish_markers()
+    def publish_keyframes(self):
+        keyframes = self.recorder.keyframes
+        anchor = keyframes[0].pose_odom
+        stamp = self.get_clock().now().to_msg()
+        markers = MarkerArray()
+        for kf, pose in zip(keyframes, tnr_map.chain_poses(keyframes)):
+            m = Marker()
+            m.header.frame_id = 'odom'
+            m.header.stamp = stamp
+            m.ns = 'keyframes'
+            m.id = kf.id
+            m.type = Marker.ARROW
+            m.pose = pose_to_msg(se2.compose(anchor, pose))
+            m.scale.x, m.scale.y, m.scale.z = 0.15, 0.03, 0.03
+            ok = kf.id == 0 or kf.edge_icp_ok
+            m.color.r, m.color.g, m.color.b = (0.1, 0.8, 0.2) if ok else (1.0, 0.6, 0.0)
+            m.color.a = 1.0
+            markers.markers.append(m)
+        self.pub_keyframes.publish(markers)
 
-
-    def save_trajectory_to_disk(self) -> bool:
-        if not self.keyframes:
-            self.get_logger().warn("No keyframes recorded to save!")
+    def save(self):
+        keyframes = list(self.recorder.keyframes)
+        if not keyframes:
+            self.get_logger().warn("No keyframes yet, nothing to save")
             return False
-
-        # Resolve output file path
-        out_path = self.output_file
-        if not os.path.isabs(out_path):
-            out_path = os.path.abspath(out_path)
-
-        out_dir = os.path.dirname(out_path)
-        if out_dir:
-            os.makedirs(out_dir, exist_ok=True)
-
-        # Save metadata and poses JSON
-        metadata = {
-            'tau_d': self.tau_d,
-            'tau_theta': self.tau_theta,
-            'total_keyframes': len(self.keyframes),
-            'keyframes': self.keyframes
-        }
-        with open(out_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
-
-        # Save scan point clouds in matching .npz
-        npz_path = os.path.splitext(out_path)[0] + '_scans.npz'
-        scans_dict = {f'scan_{i}': pts for i, pts in enumerate(self.keyframe_points)}
-        np.savez_compressed(npz_path, **scans_dict)
-
-        self.get_logger().info(
-            f"Trajectory successfully saved: {len(self.keyframes)} anchors.\n"
-            f"  Metadata: '{out_path}'\n"
-            f"  Point clouds: '{npz_path}'"
-        )
+        end = self.recorder.end_keyframe(*self.last_odom) if self.last_odom else None
+        if end is not None:
+            self.log_keyframe(end, 'End keyframe')
+            keyframes.append(end)
+        tnr_map.save(self.map_dir, keyframes, self.meta)
+        failed = sum(1 for kf in keyframes[1:] if not kf.edge_icp_ok)
+        self.get_logger().info(f"Saved {len(keyframes)} keyframes ({failed} edges without ICP) "
+                               f"to {self.map_dir}")
         return True
 
-    def on_start_recording(self, request, response):
-        self.is_recording = True
-        response.success = True
-        response.message = f"Recording started. Currently {len(self.keyframes)} keyframes recorded."
-        self.get_logger().info(response.message)
+    def on_save(self, request, response):
+        response.success = self.save()
+        response.message = f"{len(self.recorder.keyframes)} keyframes in {self.map_dir}"
+        if self.recorder.pending:
+            response.message += f", {len(self.recorder.pending)} references waiting for a scan"
         return response
 
-    def on_stop_recording(self, request, response):
-        self.is_recording = False
-        saved = self.save_trajectory_to_disk()
-        response.success = saved
-        response.message = f"Recording stopped and saved ({len(self.keyframes)} keyframes)."
-        self.get_logger().info(response.message)
-        return response
-
-    def on_save_trajectory(self, request, response):
-        saved = self.save_trajectory_to_disk()
-        response.success = saved
-        response.message = f"Trajectory saved ({len(self.keyframes)} keyframes)." if saved else "Failed to save trajectory."
-        return response
-
-    def publish_markers(self):
-        if not self.keyframes:
-            return
-
-        marker_array = MarkerArray()
-        stamp = self.get_clock().now().to_msg()
-
-        # 1. LineStrip connecting keyframe positions
-        line_marker = Marker()
-        line_marker.header.frame_id = 'odom'
-        line_marker.header.stamp = stamp
-        line_marker.ns = 'teach_path'
-        line_marker.id = 0
-        line_marker.type = Marker.LINE_STRIP
-        line_marker.action = Marker.ADD
-        line_marker.scale.x = 0.04  # line width
-        line_marker.color.r = 0.0
-        line_marker.color.g = 0.8
-        line_marker.color.b = 0.2
-        line_marker.color.a = 1.0
-
-        for kf in self.keyframes:
-            p = Point()
-            p.x = kf['pose'][0]
-            p.y = kf['pose'][1]
-            p.z = 0.02
-            line_marker.points.append(p)
-
-        marker_array.markers.append(line_marker)
-
-        # 2. Arrows for each keyframe orientation
-        for i, kf in enumerate(self.keyframes):
-            arrow = Marker()
-            arrow.header.frame_id = 'odom'
-            arrow.header.stamp = stamp
-            arrow.ns = 'teach_anchors'
-            arrow.id = i + 1
-            arrow.type = Marker.ARROW
-            arrow.action = Marker.ADD
-            arrow.pose.position.x = kf['pose'][0]
-            arrow.pose.position.y = kf['pose'][1]
-            arrow.pose.position.z = 0.02
-
-            q = quaternion_from_yaw(kf['pose'][2])
-            arrow.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
-
-            arrow.scale.x = 0.15  # arrow length
-            arrow.scale.y = 0.03  # arrow width
-            arrow.scale.z = 0.03  # arrow height
-
-            arrow.color.r = 0.9
-            arrow.color.g = 0.6
-            arrow.color.b = 0.1
-            arrow.color.a = 0.9
-            marker_array.markers.append(arrow)
-
-        self.pub_markers.publish(marker_array)
-        if self.path_msg.poses:
-            self.path_msg.header.stamp = stamp
-            self.pub_path.publish(self.path_msg)
-
+    def shutdown(self):
+        self.added(self.recorder.flush())
+        self.save()
 
 
 def main(args=None):
@@ -330,12 +202,10 @@ def main(args=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    finally:
-        if node.is_recording and node.keyframes:
-            node.save_trajectory_to_disk()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    node.shutdown()
+    node.destroy_node()
+    if rclpy.ok():
+        rclpy.shutdown()
 
 
 if __name__ == '__main__':
