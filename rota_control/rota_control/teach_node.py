@@ -15,7 +15,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
-from rota_common.transformations import euler_from_quaternion, quaternion_from_euler
+from rota_common.se2 import quaternion_from_yaw, yaw_from_quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -25,20 +25,6 @@ def normalize_angle(angle: float) -> float:
     if a <= -math.pi or math.isclose(a, -math.pi, abs_tol=1e-9):
         return math.pi
     return a
-
-
-def get_yaw_from_quaternion(q) -> float:
-    """Extracts yaw from a Quaternion message or list."""
-    if hasattr(q, 'x'):
-        qx, qy, qz, qw = q.x, q.y, q.z, q.w
-    else:
-        qx, qy, qz, qw = q[0], q[1], q[2], q[3]
-    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if norm < 1e-6:
-        return 0.0
-    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
-    _, _, yaw = euler_from_quaternion([qx, qy, qz, qw])
-    return yaw
 
 
 def se2_minus(x_a: Tuple[float, float, float], x_b: Tuple[float, float, float]) -> Tuple[float, float, float]:
@@ -143,7 +129,7 @@ class TeachNode(Node):
     def on_odom(self, msg: Odometry):
         px = msg.pose.pose.position.x
         py = msg.pose.pose.position.y
-        yaw = get_yaw_from_quaternion(msg.pose.pose.orientation)
+        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
         self.current_pose = (px, py, yaw)
 
         if not self.is_recording:
@@ -202,7 +188,7 @@ class TeachNode(Node):
         pose_stamped.pose.position.x = float(px)
         pose_stamped.pose.position.y = float(py)
         pose_stamped.pose.position.z = 0.02
-        q = quaternion_from_euler(0.0, 0.0, float(yaw))
+        q = quaternion_from_yaw(float(yaw))
         pose_stamped.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
         self.path_msg.poses.append(pose_stamped)
         self.path_msg.header.stamp = pose_stamped.header.stamp
@@ -317,7 +303,7 @@ class TeachNode(Node):
             arrow.pose.position.y = kf['pose'][1]
             arrow.pose.position.z = 0.02
 
-            q = quaternion_from_euler(0.0, 0.0, kf['pose'][2])
+            q = quaternion_from_yaw(kf['pose'][2])
             arrow.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
 
             arrow.scale.x = 0.15  # arrow length

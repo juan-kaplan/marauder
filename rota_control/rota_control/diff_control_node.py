@@ -14,7 +14,7 @@ from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from rota_common.cmd_vel import CmdVelPublisher
-from rota_common.transformations import euler_from_quaternion
+from rota_common.se2 import yaw_from_quaternion
 
 
 def normalize_angle(angle: float) -> float:
@@ -25,22 +25,6 @@ def normalize_angle(angle: float) -> float:
     if a <= -math.pi or math.isclose(a, -math.pi, abs_tol=1e-9):
         return math.pi
     return a
-
-
-def get_yaw_from_quaternion(q) -> float:
-    """Extracts yaw from a Quaternion object (with x, y, z, w attributes) or iterable."""
-    if hasattr(q, 'x'):
-        qx, qy, qz, qw = q.x, q.y, q.z, q.w
-    else:
-        qx, qy, qz, qw = q[0], q[1], q[2], q[3]
-
-    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if norm < 1e-6:
-        return 0.0
-
-    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
-    _, _, yaw = euler_from_quaternion([qx, qy, qz, qw])
-    return yaw
 
 
 class DiffControlNode(Node):
@@ -146,7 +130,7 @@ class DiffControlNode(Node):
 
         x_g = target_pose.pose.position.x
         y_g = target_pose.pose.position.y
-        theta_g = get_yaw_from_quaternion(target_pose.pose.orientation)
+        theta_g = yaw_from_quaternion(target_pose.pose.orientation)
 
         self.goal_pose = (x_g, y_g, theta_g)
         self.goal_active = True
@@ -159,7 +143,7 @@ class DiffControlNode(Node):
         """Callback for robot odometry updates."""
         x = msg.pose.pose.position.x
         y = msg.pose.pose.position.y
-        theta = get_yaw_from_quaternion(msg.pose.pose.orientation)
+        theta = yaw_from_quaternion(msg.pose.pose.orientation)
         self.current_pose = (x, y, theta)
 
     def get_current_pose(self):
@@ -173,7 +157,7 @@ class DiffControlNode(Node):
                 )
                 x = t.transform.translation.x
                 y = t.transform.translation.y
-                theta = get_yaw_from_quaternion(t.transform.rotation)
+                theta = yaw_from_quaternion(t.transform.rotation)
                 return (x, y, theta)
             except TransformException as ex:
                 self.get_logger().warn(
