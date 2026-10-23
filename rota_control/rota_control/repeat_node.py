@@ -21,7 +21,7 @@ from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster
 from rota_common.cmd_vel import CmdVelPublisher
-from rota_common.transformations import euler_from_matrix, euler_from_quaternion, quaternion_from_euler
+from rota_common.se2 import from_matrix, quaternion_from_yaw, yaw_from_quaternion
 from visualization_msgs.msg import Marker, MarkerArray
 
 
@@ -32,20 +32,6 @@ def normalize_angle(angle: float) -> float:
     if a <= -math.pi or math.isclose(a, -math.pi, abs_tol=1e-9):
         return math.pi
     return a
-
-
-def get_yaw_from_quaternion(q) -> float:
-    """Extracts yaw from a Quaternion message or list."""
-    if hasattr(q, 'x'):
-        qx, qy, qz, qw = q.x, q.y, q.z, q.w
-    else:
-        qx, qy, qz, qw = q[0], q[1], q[2], q[3]
-    norm = math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
-    if norm < 1e-6:
-        return 0.0
-    qx, qy, qz, qw = qx / norm, qy / norm, qz / norm, qw / norm
-    _, _, yaw = euler_from_quaternion([qx, qy, qz, qw])
-    return yaw
 
 
 def se2_minus(x_a: Tuple[float, float, float], x_b: Tuple[float, float, float]) -> Tuple[float, float, float]:
@@ -81,10 +67,7 @@ def se2_to_matrix4(x: float, y: float, theta: float) -> np.ndarray:
 
 def matrix4_to_se2(T: np.ndarray) -> Tuple[float, float, float]:
     """Extracts (x, y, yaw) from a 4x4 homogeneous matrix."""
-    x = float(T[0, 3])
-    y = float(T[1, 3])
-    _, _, yaw = euler_from_matrix(T, axes='sxyz')
-    return (x, y, normalize_angle(yaw))
+    return from_matrix(T)
 
 
 def points_to_open3d_pcd(points_2d: np.ndarray):
@@ -272,7 +255,7 @@ class RepeatNode(Node):
             ps.pose.position.x = float(kf['pose'][0])
             ps.pose.position.y = float(kf['pose'][1])
             ps.pose.position.z = 0.02
-            q = quaternion_from_euler(0.0, 0.0, float(kf['pose'][2]))
+            q = quaternion_from_yaw(float(kf['pose'][2]))
             ps.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
             self.taught_path_msg.poses.append(ps)
 
@@ -281,7 +264,7 @@ class RepeatNode(Node):
     def on_odom(self, msg: Odometry):
         px = msg.pose.pose.position.x
         py = msg.pose.pose.position.y
-        yaw = get_yaw_from_quaternion(msg.pose.pose.orientation)
+        yaw = yaw_from_quaternion(msg.pose.pose.orientation)
         self.current_odom_pose = (px, py, yaw)
 
         # Update and publish actual repeat path in RViz
@@ -369,7 +352,7 @@ class RepeatNode(Node):
         tf_anchor.transform.translation.x = float(anchor_odom_pose[0])
         tf_anchor.transform.translation.y = float(anchor_odom_pose[1])
         tf_anchor.transform.translation.z = 0.0
-        q_a = quaternion_from_euler(0.0, 0.0, float(anchor_odom_pose[2]))
+        q_a = quaternion_from_yaw(float(anchor_odom_pose[2]))
         tf_anchor.transform.rotation = Quaternion(x=q_a[0], y=q_a[1], z=q_a[2], w=q_a[3])
         self.tf_broadcaster.sendTransform(tf_anchor)
 
@@ -381,7 +364,7 @@ class RepeatNode(Node):
         tf_icp.transform.translation.x = float(s_k[0])
         tf_icp.transform.translation.y = float(s_k[1])
         tf_icp.transform.translation.z = 0.0
-        q_i = quaternion_from_euler(0.0, 0.0, float(s_k[2]))
+        q_i = quaternion_from_yaw(float(s_k[2]))
         tf_icp.transform.rotation = Quaternion(x=q_i[0], y=q_i[1], z=q_i[2], w=q_i[3])
         self.tf_broadcaster.sendTransform(tf_icp)
 
@@ -407,7 +390,7 @@ class RepeatNode(Node):
             tf_target.transform.translation.x = float(T_k_next[0])
             tf_target.transform.translation.y = float(T_k_next[1])
             tf_target.transform.translation.z = 0.0
-            q_t = quaternion_from_euler(0.0, 0.0, float(T_k_next[2]))
+            q_t = quaternion_from_yaw(float(T_k_next[2]))
             tf_target.transform.rotation = Quaternion(x=q_t[0], y=q_t[1], z=q_t[2], w=q_t[3])
             self.tf_broadcaster.sendTransform(tf_target)
 
@@ -526,7 +509,7 @@ class RepeatNode(Node):
             wp_marker.pose.position.x = float(tx)
             wp_marker.pose.position.y = float(ty)
             wp_marker.pose.position.z = 0.05
-            q = quaternion_from_euler(0.0, 0.0, tth)
+            q = quaternion_from_yaw(tth)
             wp_marker.pose.orientation = Quaternion(x=q[0], y=q[1], z=q[2], w=q[3])
             wp_marker.scale.x = 0.20
             wp_marker.scale.y = 0.04
