@@ -4,8 +4,6 @@ Implementación de la persona A según [`arquitectura.md`](arquitectura.md):
 la librería compartida en `rota_common` y el `localization_node` con los modos
 `encoders`, `lidar` y `mixed` en `rota_localization`.
 
-![Pasillo en L: los tres modos contra la pose real de Gazebo](media/corridor.gif)
-
 ## Qué hay
 
 | Archivo | Qué hace |
@@ -16,7 +14,7 @@ la librería compartida en `rota_common` y el `localization_node` con los modos
 | `rota_common/icp.py` | `align(source, target, guess, params) → IcpResult`. Point-to-plane por defecto. |
 | `rota_localization/localizer.py` | La lógica de los tres modos, sin ROS. |
 | `rota_localization/localization_node.py` | El nodo: `/rel_odom`, `/localization/reference`, `/localization/odom` y TF `odom → reference → robot_frame`. |
-| `rota_localization/experiments/corridor/` | El experimento del pasillo de esta página. |
+| `rota_localization/experiments/` | Los experimentos de esta página (`figure8` y `corridor`). |
 
 Tests: `colcon test --packages-select rota_common rota_localization` (65 tests).
 
@@ -57,10 +55,56 @@ Hay que avisarle al resto del equipo:
 
 ## Resultados
 
-### Pasillo en L
+Dos experimentos en Gazebo, con los tres modos corriendo en paralelo sobre el
+mismo robot y las mismas ruedas imperfectas: 0.5 % de diferencia de radio y
+ruido de 0.002 m/√m. El robot lo maneja un script que usa la pose real de
+Gazebo, como si lo manejara una persona; los localizadores nunca la ven. Los
+errores son contra esa pose real.
 
-`experiments/corridor/`: un pasillo de 1.6 m de ancho, más largo que el
-alcance del LiDAR (3.5 m), con una esquina a 90°. El robot hace:
+### 1. `turtlebot3_world`: el caso fácil
+
+Un ocho alrededor de dos columnas: 15.6 m y cuatro vueltas, alternando el
+sentido.
+
+![Ocho en turtlebot3_world](media/figure8.gif)
+
+| Momento | mixto | lidar | encoders |
+|---|---|---|---|
+| entrada | 1.4 cm / 14 mrad | 1.3 cm / 14 mrad | 1.2 cm / 17 mrad |
+| vuelta 1 | 2.0 cm / 15 mrad | 1.9 cm / 14 mrad | 5.9 cm / 129 mrad |
+| vuelta 2 | 4.3 cm / 1 mrad | 4.2 cm / 2 mrad | 2.1 cm / 244 mrad |
+| vuelta 3 | 5.1 cm / 5 mrad | 5.2 cm / 3 mrad | 1.2 cm / 269 mrad |
+| vuelta 4 | 7.3 cm / 3 mrad | 7.4 cm / 1 mrad | 6.6 cm / 417 mrad |
+
+![Trayectorias completas en el ocho](media/figure8.png)
+
+- **encoders:** la orientación deriva vuelta a vuelta (417 mrad al final) y
+  los círculos estimados se van corriendo. El error de posición queda chico
+  solo porque el ocho vuelve cerca del punto de partida y se compensa.
+- **lidar y mixto dan lo mismo, al milímetro** (la línea punteada azul va
+  encima de la naranja). Siempre hay columnas y paredes a la vista, así que el
+  ICP siempre tiene información y, en el modo mixto, manda el ICP: las ruedas
+  solo le dan el punto de partida.
+
+### Por qué un segundo experimento
+
+Con el ocho, el modo mixto parece no aportar nada sobre el lidar. Pero los
+encoders no se agregan para mejorar el ICP cuando funciona, sino para cubrir
+los momentos en que **no puede** medir, que en el robot real son comunes:
+
+- **Pasillos largos.** Las dos paredes paralelas se ven iguales en todo el
+  pasillo, así que el ICP no puede saber cuánto avanzó el robot.
+- **El LiDAR deja de ver:** una persona adelante, una puerta de vidrio o un
+  scan que se pierde.
+
+Un mundo con columnas por todos lados no tiene ninguno de los dos problemas.
+Para mostrar la diferencia entre los modos hace falta un escenario que los
+tenga, y por eso el pasillo en L.
+
+### 2. Pasillo en L: el caso difícil
+
+Un pasillo de 1.6 m de ancho, más largo que el alcance del LiDAR (3.5 m), con
+una esquina a 90°. El robot hace:
 
 1. stop and go en el primer tramo (4.4 m), sin nada al alcance del LiDAR
    adelante ni atrás;
@@ -68,9 +112,7 @@ alcance del LiDAR (3.5 m), con una esquina a 90°. El robot hace:
    lugar;
 3. recorre 4 m del segundo tramo.
 
-Los tres modos corren en paralelo sobre el mismo robot. Las ruedas tienen 0.5 %
-de diferencia de radio y ruido de 0.002 m/√m. Errores contra la pose real de
-Gazebo:
+![Pasillo en L](media/corridor.gif)
 
 | Momento | mixto | lidar | encoders |
 |---|---|---|---|
@@ -79,7 +121,7 @@ Gazebo:
 | tras el giro a ciegas | 0.3 cm / 6 mrad | 1133.0 cm / 1555 mrad | 177.5 cm / 298 mrad |
 | final | 3.1 cm / 6 mrad | 1002.9 cm / 1565 mrad | 216.3 cm / 404 mrad |
 
-![Trayectorias completas](media/corridor.png)
+![Trayectorias completas en el pasillo](media/corridor.png)
 
 - **lidar:** en el pasillo no ve avance (el error de 441 cm es todo lo
   recorrido) y el giro a ciegas no lo registra (el error de orientación queda
@@ -93,30 +135,18 @@ Advertencia: el ruido simulado no tiene un error de escala común a las dos
 ruedas. En el robot real ese error pasaría completo al avance del mixto en un
 pasillo, por ejemplo 1 % de error de escala sería ~16 cm en 16 m.
 
-Para reproducirlo (con el workspace compilado en `$TNR_WS`, por defecto
-`~/tp1_ws`):
+### Cómo reproducirlo
+
+Con el workspace compilado en `$TNR_WS` (por defecto `~/tp1_ws`):
 
 ```bash
-cd rota_localization/experiments/corridor
-./run.sh                                   # con Gazebo y RViz
-LOG=/tmp/run.npz ./run.sh gui:=false       # sin ventanas, guardando la corrida
-python3 render.py /tmp/run.npz /tmp/out    # GIF, PNG y tabla
+cd rota_localization/experiments
+./run.sh figure8                                  # con Gazebo y RViz
+./run.sh corridor
+LOG=/tmp/c.npz ./run.sh corridor gui:=false       # sin ventanas, guardando la corrida
+python3 render.py /tmp/c.npz /tmp/out             # GIF, PNG y tabla
 ./stop.sh
 ```
-
-### `turtlebot3_world` (Gazebo)
-
-Ocho alrededor de dos columnas, 15.6 m y ~4 vueltas, con ruedas de 2 % de
-bias y ruido de 0.01. Error final:
-
-| | encoders | lidar | mixto |
-|---|---|---|---|
-| Ruedas ideales | 0.4 cm / 1 mrad | 7.4 cm / 22 mrad | 7.5 cm / 22 mrad |
-| Ruedas con 2 % de bias | 44.7 cm / 1581 mrad | 7.5 cm / 30 mrad | 7.3 cm / 31 mrad |
-
-En un mundo con referencias por todos lados el mixto da lo mismo que el lidar:
-mientras el ICP funcione, manda el ICP. La deriva del lidar varía entre
-corridas (22 a 88 mrad en el mismo recorrido) por el ruido del LiDAR simulado.
 
 ## Para tener en cuenta
 
@@ -161,7 +191,7 @@ corridas (22 a 88 mrad en el mismo recorrido) por el ruido del LiDAR simulado.
   (`SetEnvironmentVariable('OMP_NUM_THREADS', '1')`). Cubre cualquier nodo que
   importe `open3d` por su cuenta.
 - **Apagar la TF `odom → base_footprint` de Gazebo.**
-  `experiments/corridor/corridor_launch.py` (`spawn_patched_robot`) tiene un
+  `experiments/compare_launch.py` (`patched_model`) tiene un
   parche que funciona en Humble con Gazebo Classic: pone `publish_odom_tf` en
   false y manda la odometría del plugin (la pose real del modelo en el mundo)
   a `/ground_truth/odom`, con frame `world`. Eso responde el pendiente de
@@ -175,9 +205,10 @@ corridas (22 a 88 mrad en el mismo recorrido) por el ruido del LiDAR simulado.
   simulación, `encoder_noise_std`, `encoder_noise_bias` y `encoder_noise_seed`.
 - **`scan_timeout` (0.5 s) está pensado para el LDS del TB3 a 5 Hz.** Con el
   LiDAR del TB4 hay que revisarlo según su frecuencia real.
-- **Para los gráficos de evaluación** se pueden reusar `drive_corridor.py
-  --log` (guarda la pose real, las estimaciones y los scans a 10 Hz en un
-  `.npz`) y `render.py` (GIF, PNG y tabla).
+- **Para los gráficos de evaluación** se pueden reusar `experiments/driver.py`
+  (con `--log` guarda la pose real, las estimaciones y los scans a 10 Hz en un
+  `.npz`) y `render.py` (GIF, PNG y tabla). Un escenario nuevo es un
+  `drive_<nombre>.py` de pocas líneas, como `drive_figure8.py`.
 - **Gazebo y RViz no abren desde la terminal de VS Code (snap)**: mueren con
   `GLib-GIO-ERROR`. `run.sh` limpia las variables de entorno del snap antes de
   lanzar; desde una terminal normal no pasa.
