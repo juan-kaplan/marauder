@@ -61,6 +61,10 @@ ruido de 0.002 m/√m. El robot lo maneja un script que usa la pose real de
 Gazebo, como si lo manejara una persona; los localizadores nunca la ven. Los
 errores son contra esa pose real.
 
+Las tablas son de una corrida. Por el ruido del LiDAR simulado, los números
+cambian algo entre corridas (en el pasillo, el mixto terminó entre 3 y 7 cm),
+pero el orden de magnitud y la comparación entre modos se mantienen.
+
 ### 1. `turtlebot3_world`: el caso fácil
 
 Un ocho alrededor de dos columnas: 15.6 m y cuatro vueltas, alternando el
