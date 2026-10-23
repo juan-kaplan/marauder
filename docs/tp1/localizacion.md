@@ -118,6 +118,74 @@ En un mundo con referencias por todos lados el mixto da lo mismo que el lidar:
 mientras el ICP funcione, manda el ICP. La deriva del lidar varía entre
 corridas (22 a 88 mrad en el mismo recorrido) por el ruido del LiDAR simulado.
 
+## Para tener en cuenta
+
+### Persona B: Teach and Repeat
+
+- **Suscribirse a `/localization/reference` con `RELIABLE` + `TRANSIENT_LOCAL`
+  y depth 100.** La referencia 0 se publica con el primer `/joint_states` (en
+  modo encoders) o con el primer scan (en lidar y mixto). Con una suscripción
+  volátil, un `teach_node` que arranque unos milisegundos tarde la pierde.
+- **El stamp de cada referencia es el stamp exacto del mensaje que la creó.**
+  En lidar y mixto es el stamp de un scan, así que el buffer de scans del Teach
+  lo encuentra por igualdad. En encoders es un stamp de `/joint_states` y hay
+  que buscar el scan más cercano.
+- **Referencias sin scan.** En modo mixto, si el LiDAR deja de publicar más de
+  `scan_timeout` (0.5 s), las referencias se crean solo con las ruedas. En ese
+  caso no hay scan cerca de su stamp, y el próximo scan genera otra referencia
+  enseguida. Los stamps de las referencias siempre crecen.
+- **`teach_node` y `repeat_node` todavía importan `open3d` directamente**
+  (`repeat_node.py:11`). Si lo importan antes que `rota_common.icp`, OpenMP
+  arranca con todos los threads y el ICP pasa de ~0.5 ms a cientos de ms
+  cuando corre junto al localizador. Hay que usar `rota_common.icp.align` o
+  importarlo primero.
+- **Mirar `IcpResult` además de `pose`.** `ok` dice si alcanzó `min_fitness`.
+  `degenerate > 0` dice que en alguna dirección se conservó la estimación
+  inicial: en un pasillo, el avance lo da la estimación inicial (la
+  odometría), no el ICP. Por eso la estimación inicial tiene que ser buena:
+  para las aristas, `between(pose_{n-1}, pose_n)` de las referencias; en el
+  Repeat, el Δodom.
+- **La TF `odom → robot_frame` llega a ritmos distintos según el modo.** En
+  encoders y mixto se actualiza con cada `/joint_states` (30 Hz en Gazebo). En
+  lidar, solo con cada scan (5 Hz en el TB3), así que pedirla "ahora" a 20 Hz
+  da datos de hasta 0.2 s de atraso. En lidar, si el LiDAR se corta, deja de
+  publicarse y el lookup falla: el Repeat tiene que frenar en ese caso, no
+  seguir con la última pose.
+- `teach_node` y `repeat_node` hoy escuchan `odom_topic` (`/odom`). En el
+  diseño nuevo usan `/localization/reference` y la TF del localizador, y
+  `/odom` de Gazebo deja de existir (pasa a `/ground_truth/odom`, ver abajo).
+
+### Persona C: control e infraestructura
+
+- **`OMP_NUM_THREADS=1` en los launches**
+  (`SetEnvironmentVariable('OMP_NUM_THREADS', '1')`). Cubre cualquier nodo que
+  importe `open3d` por su cuenta.
+- **Apagar la TF `odom → base_footprint` de Gazebo.**
+  `experiments/corridor/corridor_launch.py` (`spawn_patched_robot`) tiene un
+  parche que funciona en Humble con Gazebo Classic: pone `publish_odom_tf` en
+  false y manda la odometría del plugin (la pose real del modelo en el mundo)
+  a `/ground_truth/odom`, con frame `world`. Eso responde el pendiente de
+  "de qué tópico sale el ground truth" para Humble. En Jazzy (gz) es otro
+  camino. El robot aparece en el origen, así que una TF fija `world → odom`
+  identidad deja ver la pose real y las estimaciones en el mismo RViz.
+- **Parámetros del localizador para los perfiles `tb3_sim`/`tb4`:** `mode`,
+  `robot_frame` (`base_footprint` en el TB3, verificar en el TB4),
+  `left_wheel_joint`/`right_wheel_joint`, `wheel_radius`, `wheel_separation`,
+  `scan_timeout`, `icp_*` (incluido `icp_degeneracy_ratio`) y, solo en
+  simulación, `encoder_noise_std`, `encoder_noise_bias` y `encoder_noise_seed`.
+- **`scan_timeout` (0.5 s) está pensado para el LDS del TB3 a 5 Hz.** Con el
+  LiDAR del TB4 hay que revisarlo según su frecuencia real.
+- **Para los gráficos de evaluación** se pueden reusar `drive_corridor.py
+  --log` (guarda la pose real, las estimaciones y los scans a 10 Hz en un
+  `.npz`) y `render.py` (GIF, PNG y tabla).
+- **Gazebo y RViz no abren desde la terminal de VS Code (snap)**: mueren con
+  `GLib-GIO-ERROR`. `run.sh` limpia las variables de entorno del snap antes de
+  lanzar; desde una terminal normal no pasa.
+- **Al cortar un `ros2 launch` de Gazebo, matar el grupo de procesos entero**
+  (`setsid` + `kill -- -PGID`, como hace `stop.sh`). Si no, quedan `gzserver`
+  y nodos vivos publicando en los mismos tópicos, y arruinan la corrida
+  siguiente.
+
 ## Pendiente
 
 - **TB4:** nombres de las ruedas, geometría y `/joint_states` del Create 3,
