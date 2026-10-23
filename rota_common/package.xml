@@ -3,7 +3,7 @@
 <package format="3">
   <name>rota_common</name>
   <version>0.0.0</version>
-  <description>Shared library for the rota_* packages: SE(2) poses, message conversions, scans, ICP, cmd_vel publishing.</description>
+  <description>Shared library for the rota_* packages: SE(2) poses, message conversions, scans, ICP, Teach and Repeat map, cmd_vel publishing.</description>
   <maintainer email="jkaplan@udesa.edu.ar">juan-kaplan</maintainer>
   <license>Apache-2.0</license>
 
