@@ -13,13 +13,21 @@ Two error metrics:
 """
 
 import math
+import os
 from dataclasses import dataclass
 from typing import Sequence
 
 import numpy as np
-import open3d as o3d
 
-from rota_common.se2 import Pose2D, from_matrix, to_matrix
+# Open3D parallelises with OpenMP. For a few hundred points the threads cost
+# more than they save, and with several nodes running ICP at once
+# (localization, teach, repeat) they spin against each other: an alignment
+# that takes 0.5 ms went to ~200 ms with three processes. It only takes
+# effect if nothing imported open3d earlier in the process.
+os.environ.setdefault('OMP_NUM_THREADS', '1')
+import open3d as o3d  # noqa: E402
+
+from rota_common.se2 import Pose2D, from_matrix, to_matrix  # noqa: E402
 
 # Below this many points per cloud the alignment is not even attempted.
 MIN_POINTS = 10
