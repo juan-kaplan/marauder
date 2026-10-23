@@ -11,7 +11,11 @@ pose in the frame of keyframe ``k``. On each scan:
 * with ``use_map_icp``, ICP of the scan against the scan of keyframe ``k``
   replaces the guess when it reaches ``min_fitness``;
 * while the robot is within ``advance_dist`` of keyframe ``k+1``, or already
-  past it, the state moves to the frame of ``k+1`` without relocalizing.
+  past it, the state moves to the frame of ``k+1`` without relocalizing. If
+  ``k+1`` is mostly a turn (less than ``advance_dist`` from ``k``), the robot
+  must also have turned to within ``advance_angle`` of its heading, or beyond.
+  Otherwise the keyframes of a turn in place, which share a position, would
+  all be skipped at once.
 
 Between scans the pose is extrapolated with odom. The setpoint is keyframe
 ``k+1`` seen from the robot, or keyframe ``k`` if it is the last one; once the
@@ -19,6 +23,7 @@ robot is within the goal tolerances of the last keyframe it is the identity
 from then on, which makes the controller stop.
 """
 
+import math
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
@@ -30,8 +35,9 @@ from rota_common.tnr_map import Keyframe, Pose2D
 class RepeatTracker:
 
     def __init__(self, keyframes: Sequence[Keyframe], use_map_icp: bool = True,
-                 advance_dist: float = 0.20, goal_tolerance: float = 0.08,
-                 goal_angle_tolerance: float = 0.15, icp_max_distance: float = 0.30,
+                 advance_dist: float = 0.20, advance_angle: float = 0.15,
+                 goal_tolerance: float = 0.08, goal_angle_tolerance: float = 0.15,
+                 icp_max_distance: float = 0.30,
                  icp_max_iterations: int = 30, icp_min_fitness: float = 0.25):
         if not keyframes:
             raise ValueError('the map has no keyframes')
@@ -40,6 +46,7 @@ class RepeatTracker:
         self.points = [kf.points for kf in keyframes]
         self.use_map_icp = use_map_icp
         self.advance_dist = advance_dist
+        self.advance_angle = advance_angle
         self.goal_tolerance = goal_tolerance
         self.goal_angle_tolerance = goal_angle_tolerance
         self.icp_max_distance = icp_max_distance
@@ -93,13 +100,20 @@ class RepeatTracker:
         else:
             self.rel = guess
 
-        while not self.is_last:
-            next_robot = se2.between(self.edges[self.k + 1], self.rel)
-            if se2.norm(next_robot) < self.advance_dist or next_robot[0] >= 0.0:
-                self.rel = next_robot
-                self.k += 1
-            else:
-                break
+        while not self.is_last and self._reached_next():
+            self.rel = se2.between(self.edges[self.k + 1], self.rel)
+            self.k += 1
+
+    def _reached_next(self) -> bool:
+        edge = self.edges[self.k + 1]
+        next_robot = se2.between(edge, self.rel)
+        if se2.norm(next_robot) >= self.advance_dist and next_robot[0] < 0.0:
+            return False
+        if se2.norm(edge) >= self.advance_dist:
+            return True
+        # A turn in place: the position is met from the start, so wait until
+        # the robot has turned up to advance_angle short of it, or past it.
+        return next_robot[2] * math.copysign(1.0, edge[2]) > -self.advance_angle
 
     def pose(self, odom_now: Sequence[float]) -> Pose2D:
         """``T_kf_robot`` now: the latest scan estimate plus the odom motion since that scan."""
