@@ -128,7 +128,8 @@ def load(map_dir: str) -> Tuple[Dict, List[Keyframe]]:
                 points=scans[key],
             )
             if len(kf.points) != entry.get('num_points', len(kf.points)):
-                raise ValueError(f"'{key}' has {len(kf.points)} points, map.json says {entry['num_points']}")
+                raise ValueError(f"'{key}' has {len(kf.points)} points, "
+                                 f"map.json says {entry['num_points']}")
             keyframes.append(kf)
     _check_ids(keyframes)
     return doc, keyframes
