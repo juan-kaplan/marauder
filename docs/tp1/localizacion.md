@@ -23,11 +23,12 @@ Con el workspace compilado (`python -m colcon build --symlink-install`) y el
 venv activo:
 
 ```bash
-ros2 launch rota_localization sim_launch.py mode:=encoders   # o lidar, o mixed
+ros2 launch rota_common sim_launch.py                   # la simulación
+ros2 launch rota_control teach_launch.py mode:=encoders   # o lidar, o mixed
 ```
 
-El launch levanta `turtlebot3_world` en Gazebo, con el robot en
-`(-2, -0.5)`, y el nodo. Para mover el robot, `teleop_twist_keyboard` o
+`sim_launch.py` levanta `turtlebot3_world` en Gazebo, con el robot en
+`(-2, -0.5)`, y `teach_launch.py` el nodo con `teach_node`. Para mover el robot, `teleop_twist_keyboard` o
 `ros2 topic pub /cmd_vel`. La odometría de Gazebo (`/odom`) queda como
 referencia de la pose real.
 

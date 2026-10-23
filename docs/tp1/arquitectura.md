@@ -114,11 +114,12 @@ marauder/
 │   ├── transformations.py  (ya existe)
 │   ├── cmd_vel.py          (ya existe)
 │   ├── se2.py  msgs.py  scan.py  icp.py  tnr_map.py
+│   └── launch/   sim_launch.py
 ├── rota_localization/      NUEVO · capa 1
 │   └── localization_node.py
 ├── rota_control/           capa 2 + control
 │   ├── teach_node.py  repeat_node.py  diff_control_node.py
-│   ├── launch/   tnr_sim_launch.py  teach_launch.py  repeat_launch.py
+│   ├── launch/   teach_launch.py  repeat_launch.py
 │   ├── config/   tb3_sim.yaml  tb4.yaml  tnr_bridge.yaml  teach.rviz  repeat.rviz
 │   └── scripts/  plot_teach_vs_repeat.py
 ├── rota_icp/  rota_robmob/ TPs de clase anteriores: no se tocan
@@ -136,7 +137,8 @@ se2.py      normalize_angle(a) · compose(a, b) · inverse(a) · between(a, b) �
 msgs.py     pose_to_msg(p) · pose_from_msg(msg) · pose_stamped(stamp, frame, p)
             transform_stamped(stamp, parent, child, p) · pose_from_transform(msg)
 scan.py     scan_to_points(msg, rmin, rmax) → (N, 2) en el frame del LiDAR
-            # llevarlos a robot_frame (TF fija del LiDAR) lo hace cada nodo, como localization_node
+            project(msg, tf_buffer, robot_frame, rmin, rmax) → (N, 2) en robot_frame | None
+            # usa la TF fija del LiDAR; None mientras no esté
 icp.py      align(source, target, guess, max_distance=0.30, max_iterations=30, min_fitness=0.25)
                 → (pose, fitness, ok)
             # pose = pose del robot de source en el frame del robot de target
@@ -171,10 +173,9 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | | |
 |---|---|
 | Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
-| Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` · `/repeat/markers` |
+| Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
-| Servicios | `~/start` · `~/stop` |
-| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `goal_tolerance` 0.08 m · `goal_angle_tolerance` 0.15 rad · `control_frequency` 20 Hz · `auto_start` · `icp_*` |
+| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `goal_tolerance` 0.08 m · `goal_angle_tolerance` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
 
 ### `diff_control_node` (control)
 
@@ -182,7 +183,8 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 |---|---|
 | Suscribe | `goal_topic` = `/repeat/setpoint`. Si el frame del objetivo es `robot_frame`, toma la pose del robot como (0, 0, 0). Se mantiene el modo `/goal_pose` en `odom` de la clase 4. |
 | Publica | `/cmd_vel` (`cmd_vel_type:=auto`, como ya está) |
-| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `setpoint_timeout` (0.5 s) sin setpoint, frena. |
+| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `goal_timeout` (0.5 s en `repeat_launch.py`, 0 = apagado) sin setpoint, frena. |
+| Parámetros para el Repeat | `goal_topic:=/repeat/setpoint` · `use_tf:=true` · `reference_frame` y `robot_frame` = `base_footprint` |
 
 ### Mapa en disco (`data/map/`)
 
@@ -199,14 +201,13 @@ graficar.
 
 ### Launches y simulación
 
-- `tnr_sim_launch.py`: mundo de gz, robot_state_publisher, spawn del TB3 y un
-  bridge propio (`tnr_bridge.yaml`) **sin** la entrada `tf`, además de teleop
-  opcional. En Humble, con Gazebo Classic, hay que poner `publish_odom_tf` en
-  false en el modelo.
-- `teach_launch.py mode:=… robot:=tb3_sim map_dir:=… rviz:=true` lanza
-  `localization_node`, `teach_node` y RViz.
-- `repeat_launch.py mode:=… robot:=tb3_sim map_dir:=… use_map_icp:=true rviz:=true`
-  lanza `localization_node`, `repeat_node`, `diff_control_node` y RViz.
+- `rota_common/launch/sim_launch.py`: solo la simulación (mundo de Gazebo,
+  TB3 con `publish_odom_tf` en false). Se corre aparte de Teach y Repeat:
+  `ros2 launch rota_common sim_launch.py`.
+- `teach_launch.py mode:=… map_dir:=… rviz:=true` lanza `localization_node`,
+  `teach_node` y RViz.
+- `repeat_launch.py mode:=… map_dir:=… use_map_icp:=true rviz:=true` lanza
+  `localization_node`, `repeat_node`, `diff_control_node` y RViz.
 - `robot:=tb3_sim|tb4` carga `config/<robot>.yaml`: frames, joints de las
   ruedas, geometría, tópicos y `use_sim_time`. En el TB4, apagar
   `publish_odom_tfs` del Create 3.
