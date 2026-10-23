@@ -115,3 +115,48 @@ def test_unrelated_scan_is_rejected(params):
 def test_unknown_method():
     with pytest.raises(ValueError):
         align(room(), room(), se2.IDENTITY, IcpParams(method='nope'))
+
+
+def corridor_scan(pose, half_width=0.75, beams=360, max_range=3.5, noise=0.01, rng=None):
+    """Scan from ``pose`` inside an endless corridor along x."""
+    x, y, th = pose
+    a = np.linspace(-math.pi, math.pi, beams, endpoint=False)
+    s = np.sin(th + a)
+    with np.errstate(divide='ignore'):
+        r = np.where(s > 0, (half_width - y) / s, (-half_width - y) / s)
+    keep = np.isfinite(r) & (r > 0.12) & (r < max_range)
+    r = r[keep] + (rng.normal(0.0, noise, keep.sum()) if rng is not None else 0.0)
+    return np.column_stack((r * np.cos(a[keep]), r * np.sin(a[keep])))
+
+
+def test_corridor_keeps_guess_along_it_and_fixes_the_rest():
+    rng = np.random.default_rng(0)
+    a, b = (0.0, 0.1, 0.0), (0.2, 0.05, 0.08)
+    target, source = corridor_scan(a, rng=rng), corridor_scan(b, rng=rng)
+    truth = se2.between(a, b)
+    for along in (0.0, 0.2, 0.4):   # wheels say: stopped, right, too far
+        # lateral and heading errors in the guess must still be corrected
+        guess = (along, truth[1] + 0.04, truth[2] - 0.05)
+        r = align(source, target, guess)
+        assert r.ok and r.degenerate == 1
+        assert r.pose[1] == pytest.approx(truth[1], abs=0.01)
+        assert r.pose[2] == pytest.approx(truth[2], abs=0.01)
+        # along the corridor the result is the guess, not noise
+        assert r.pose[0] == pytest.approx(along, abs=0.01)
+
+
+def test_corridor_without_remapping_drifts_toward_no_motion():
+    rng = np.random.default_rng(0)
+    a, b = (0.0, 0.0, 0.0), (0.2, 0.0, 0.0)
+    target, source = corridor_scan(a, rng=rng), corridor_scan(b, rng=rng)
+    r = align(source, target, (0.2, 0.0, 0.0), IcpParams(degeneracy_ratio=0.0))
+    assert r.degenerate == 0
+    assert abs(r.pose[0] - 0.2) > 0.01   # even from the true guess
+
+
+@both
+def test_room_is_not_degenerate(params):
+    target = room()
+    truth = (0.25, -0.08, 0.15)
+    r = align(seen_from(target, truth), target, se2.compose(truth, (0.04, -0.03, 0.04)), params)
+    assert r.degenerate == 0

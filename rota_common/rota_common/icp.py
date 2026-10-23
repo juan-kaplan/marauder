@@ -10,6 +10,14 @@ Two error metrics:
 * ``point_to_point``: distance between matched points. It stops within about
   half the point spacing of the truth, because points settle on a neighbouring
   sample of the same wall. Kept for comparison.
+
+Degenerate geometry (a corridor, a single wall): along some directions the
+scans carry almost no information, and what ICP returns there is set by noise
+and by how the beams happen to sample the walls. In a corridor every scan looks
+the same in the robot frame, so ICP tends to report no motion along it. Those
+directions are found from the eigenvalues of the point-to-line information
+matrix, and the result keeps the guess there (solution remapping, Zhang, Kaess
+and Singh, ICRA 2016).
 """
 
 import math
@@ -27,7 +35,7 @@ import numpy as np
 os.environ.setdefault('OMP_NUM_THREADS', '1')
 import open3d as o3d  # noqa: E402
 
-from rota_common.se2 import Pose2D, from_matrix, to_matrix  # noqa: E402
+from rota_common.se2 import Pose2D, compose, from_matrix, inverse, to_matrix  # noqa: E402
 
 # Below this many points per cloud the alignment is not even attempted.
 MIN_POINTS = 10
@@ -40,7 +48,11 @@ class IcpParams:
     max_iterations: int = 30
     min_fitness: float = 0.25
     method: str = 'point_to_plane'
-    normal_neighbors: int = 8  # target neighbours used to fit each line (point_to_plane)
+    normal_neighbors: int = 8  # target neighbours used to fit each line
+    # A direction is degenerate when its information is below this fraction of
+    # the best constrained one; the guess is kept there. 0 disables it. A
+    # corridor gives ~0.005, a room ~0.3.
+    degeneracy_ratio: float = 0.02
 
 
 @dataclass
@@ -49,6 +61,7 @@ class IcpResult:
     fitness: float  # fraction of source points with a correspondence (0..1)
     rmse: float     # RMS distance of those correspondences (inf if none)
     ok: bool        # fitness >= min_fitness
+    degenerate: int = 0  # directions (0..3) where the guess was kept
 
 
 def _cloud(points: np.ndarray) -> o3d.geometry.PointCloud:
@@ -74,6 +87,29 @@ def _set_line_normals(pcd: o3d.geometry.PointCloud, neighbors: int):
     pcd.normals = o3d.utility.Vector3dVector(normals)
 
 
+def _remap_degenerate(pose, guess, source, target_normals, correspondences, ratio):
+    """
+    Keep ``guess`` along the directions ICP could not observe.
+
+    The information matrix is built for a small correction ``δ`` applied in the
+    target frame (``pose' = δ ⊕ pose``), from the point-to-line residuals of
+    the final correspondences. Its units mix m and rad; with points metres away
+    the rotation is well scaled against the translations.
+    """
+    if ratio <= 0.0 or len(correspondences) < 3:
+        return pose, 0
+    T = to_matrix(pose)
+    p = source[correspondences[:, 0]] @ T[:2, :2].T + T[:2, 3]   # matched source points, target frame
+    n = target_normals[correspondences[:, 1]]
+    J = np.column_stack((n[:, 0], n[:, 1], n[:, 1] * p[:, 0] - n[:, 0] * p[:, 1]))
+    eigvals, eigvecs = np.linalg.eigh(J.T @ J)
+    weak = eigvecs[:, eigvals < ratio * eigvals[-1]]
+    if weak.shape[1] == 0:
+        return pose, 0
+    delta = np.array(compose(guess, inverse(pose)))               # guess = delta ⊕ pose
+    return compose(tuple(weak @ (weak.T @ delta)), pose), weak.shape[1]
+
+
 def align(source: np.ndarray, target: np.ndarray, guess: Sequence[float],
           params: IcpParams = IcpParams()) -> IcpResult:
     """
@@ -92,8 +128,8 @@ def align(source: np.ndarray, target: np.ndarray, guess: Sequence[float],
         return IcpResult(guess, 0.0, math.inf, False)
 
     target_pcd = _cloud(target)
+    _set_line_normals(target_pcd, params.normal_neighbors)
     if params.method == 'point_to_plane':
-        _set_line_normals(target_pcd, params.normal_neighbors)
         estimation = o3d.pipelines.registration.TransformationEstimationPointToPlane()
     else:
         estimation = o3d.pipelines.registration.TransformationEstimationPointToPoint()
@@ -111,4 +147,7 @@ def align(source: np.ndarray, target: np.ndarray, guess: Sequence[float],
         return IcpResult(guess, 0.0, math.inf, False)
     fitness = float(reg.fitness)
     rmse = float(reg.inlier_rmse) if fitness > 0.0 else math.inf
-    return IcpResult(from_matrix(reg.transformation), fitness, rmse, fitness >= params.min_fitness)
+    pose, degenerate = _remap_degenerate(
+        from_matrix(reg.transformation), guess, source,
+        np.asarray(target_pcd.normals)[:, :2], np.asarray(reg.correspondence_set), params.degeneracy_ratio)
+    return IcpResult(pose, fitness, rmse, fitness >= params.min_fitness, degenerate)

@@ -67,6 +67,7 @@ class LocalizationNode(Node):
         self.declare_parameter('icp_max_iterations', 30)
         self.declare_parameter('icp_min_fitness', 0.25)
         self.declare_parameter('icp_method', 'point_to_plane')
+        self.declare_parameter('icp_degeneracy_ratio', 0.02)
         self.declare_parameter('scan_timeout', 0.5)         # s, mixed only
         self.declare_parameter('encoder_noise_std', 0.0)    # m per sqrt(m) per wheel, simulation only
         self.declare_parameter('encoder_noise_bias', 0.0)   # relative wheel radius difference
@@ -88,7 +89,8 @@ class LocalizationNode(Node):
             max_correspondence_distance=float(param('icp_max_correspondence_distance')),
             max_iterations=int(param('icp_max_iterations')),
             min_fitness=float(param('icp_min_fitness')),
-            method=str(param('icp_method')))
+            method=str(param('icp_method')),
+            degeneracy_ratio=float(param('icp_degeneracy_ratio')))
         self.loc = Localizer(mode, float(param('tau_d')), float(param('tau_theta')),
                              float(param('wheel_radius')), float(param('wheel_separation')),
                              icp_params, float(param('scan_timeout')), noise)
@@ -137,6 +139,10 @@ class LocalizationNode(Node):
             self.get_logger().warn(
                 f"ICP against the reference failed (fitness {r.fitness:.2f}), using the guess",
                 throttle_duration_sec=2.0)
+        elif refs is not None and r is not None and r.degenerate:
+            self.get_logger().info(
+                f"ICP poorly constrained in {r.degenerate} direction(s) (corridor?), "
+                f"keeping the guess there", throttle_duration_sec=5.0)
         self.publish(refs)
 
     def publish(self, refs: Optional[List[Reference]]):
