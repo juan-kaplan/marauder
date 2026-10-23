@@ -1,0 +1,114 @@
+"""
+Repeat side of Teach and Repeat, without ROS.
+
+It follows the chain of taught keyframes (see ``docs/tp1/arquitectura.md``).
+The state is ``k``, the keyframe being followed, and ``T_kf_robot``, the robot
+pose in the frame of keyframe ``k``. On each scan:
+
+* the guess is ``T_kf_robot ⊕ Δodom``, where ``Δodom`` is the odom motion since
+  the previous scan. Only odom deltas are used, so the origin of odom does not
+  matter;
+* with ``use_map_icp``, ICP of the scan against the scan of keyframe ``k``
+  replaces the guess when it reaches ``min_fitness``;
+* while the robot is within ``advance_dist`` of keyframe ``k+1``, or already
+  past it, the state moves to the frame of ``k+1`` without relocalizing.
+
+Between scans the pose is extrapolated with odom. The setpoint is keyframe
+``k+1`` seen from the robot, or keyframe ``k`` if it is the last one; once the
+robot is within the goal tolerances of the last keyframe it is the identity
+from then on, which makes the controller stop.
+"""
+
+from typing import Optional, Sequence
+
+import numpy as np
+
+from rota_common import icp, se2
+from rota_common.se2 import Pose2D
+from rota_common.tnr_map import Keyframe
+
+
+class RepeatTracker:
+
+    def __init__(self, keyframes: Sequence[Keyframe], use_map_icp: bool = True,
+                 advance_dist: float = 0.20, goal_tolerance: float = 0.08,
+                 goal_angle_tolerance: float = 0.15, icp_params: icp.IcpParams = icp.IcpParams()):
+        if not keyframes:
+            raise ValueError('the map has no keyframes')
+        # edges[i] is keyframe i seen from keyframe i-1; edges[0] is unused.
+        self.edges = [kf.edge_from_prev for kf in keyframes]
+        self.points = [kf.points for kf in keyframes]
+        self.use_map_icp = use_map_icp
+        self.advance_dist = advance_dist
+        self.goal_tolerance = goal_tolerance
+        self.goal_angle_tolerance = goal_angle_tolerance
+        self.icp_params = icp_params
+
+        # The robot is assumed to start where the Teach started.
+        self.k = 0
+        self.rel: Pose2D = se2.IDENTITY     # T_kf_robot at the latest scan
+        self.odom: Optional[Pose2D] = None  # odom -> robot at the latest scan
+        self.done = False
+        self.last_icp: Optional[icp.IcpResult] = None
+
+    @property
+    def num_keyframes(self) -> int:
+        return len(self.edges)
+
+    @property
+    def started(self) -> bool:
+        return self.odom is not None
+
+    @property
+    def is_last(self) -> bool:
+        return self.k == self.num_keyframes - 1
+
+    @property
+    def next_edge(self) -> Optional[Pose2D]:
+        """Keyframe ``k+1`` seen from keyframe ``k``, or None on the last keyframe."""
+        return None if self.is_last else self.edges[self.k + 1]
+
+    def on_scan(self, odom: Sequence[float], points: Optional[np.ndarray]) -> None:
+        """
+        Update the estimate with a scan.
+
+        ``odom`` is odom -> robot at the scan stamp and ``points`` the scan in
+        the robot frame (None to skip ICP).
+        """
+        odom = tuple(float(v) for v in odom)
+        delta = se2.IDENTITY if self.odom is None else se2.between(self.odom, odom)
+        guess = se2.compose(self.rel, delta)
+        self.odom = odom
+
+        self.last_icp = None
+        if self.use_map_icp and points is not None:
+            self.last_icp = icp.align(points, self.points[self.k], guess, self.icp_params)
+            self.rel = self.last_icp.pose if self.last_icp.ok else guess
+        else:
+            self.rel = guess
+
+        while not self.is_last:
+            next_robot = se2.between(self.edges[self.k + 1], self.rel)
+            if se2.norm(next_robot) < self.advance_dist or next_robot[0] >= 0.0:
+                self.rel = next_robot
+                self.k += 1
+            else:
+                break
+
+    def pose(self, odom_now: Sequence[float]) -> Pose2D:
+        """``T_kf_robot`` now: the latest scan estimate plus the odom motion since that scan."""
+        if self.odom is None:
+            raise RuntimeError('no scan yet')
+        return se2.compose(self.rel, se2.between(self.odom, odom_now))
+
+    def setpoint(self, odom_now: Sequence[float]) -> Pose2D:
+        """Target pose in the robot frame; the identity once the goal is reached."""
+        if self.done:
+            return se2.IDENTITY
+        target = se2.IDENTITY if self.is_last else self.edges[self.k + 1]
+        setpoint = se2.between(self.pose(odom_now), target)
+        if (self.is_last and se2.norm(setpoint) < self.goal_tolerance
+                and abs(setpoint[2]) < self.goal_angle_tolerance):
+            self.done = True
+            return se2.IDENTITY
+        return setpoint
