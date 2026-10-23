@@ -33,6 +33,7 @@ def generate_launch_description():
     return LaunchDescription([
         SetEnvironmentVariable('TURTLEBOT3_MODEL', 'burger'),
         SetEnvironmentVariable('OMP_NUM_THREADS', '1'),
+        SetEnvironmentVariable('GAZEBO_MODEL_DATABASE_URI', ''),  # the old model server is gone, Gazebo hangs on it
         DeclareLaunchArgument('mode', default_value='encoders'),
         DeclareLaunchArgument('gui', default_value='true'),
         IncludeLaunchDescription(
