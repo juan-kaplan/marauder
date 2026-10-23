@@ -19,20 +19,20 @@ robot is within the goal tolerances of the last keyframe it is the identity
 from then on, which makes the controller stop.
 """
 
-from typing import Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
 from rota_common import icp, se2
-from rota_common.se2 import Pose2D
-from rota_common.tnr_map import Keyframe
+from rota_common.tnr_map import Keyframe, Pose2D
 
 
 class RepeatTracker:
 
     def __init__(self, keyframes: Sequence[Keyframe], use_map_icp: bool = True,
                  advance_dist: float = 0.20, goal_tolerance: float = 0.08,
-                 goal_angle_tolerance: float = 0.15, icp_params: icp.IcpParams = icp.IcpParams()):
+                 goal_angle_tolerance: float = 0.15, icp_max_distance: float = 0.30,
+                 icp_max_iterations: int = 30, icp_min_fitness: float = 0.25):
         if not keyframes:
             raise ValueError('the map has no keyframes')
         # edges[i] is keyframe i seen from keyframe i-1; edges[0] is unused.
@@ -42,14 +42,17 @@ class RepeatTracker:
         self.advance_dist = advance_dist
         self.goal_tolerance = goal_tolerance
         self.goal_angle_tolerance = goal_angle_tolerance
-        self.icp_params = icp_params
+        self.icp_max_distance = icp_max_distance
+        self.icp_max_iterations = icp_max_iterations
+        self.icp_min_fitness = icp_min_fitness
 
         # The robot is assumed to start where the Teach started.
         self.k = 0
         self.rel: Pose2D = se2.IDENTITY     # T_kf_robot at the latest scan
         self.odom: Optional[Pose2D] = None  # odom -> robot at the latest scan
         self.done = False
-        self.last_icp: Optional[icp.IcpResult] = None
+        # (pose, fitness, ok) of the latest ICP, None if the latest scan had none.
+        self.last_icp: Optional[Tuple[Pose2D, float, bool]] = None
 
     @property
     def num_keyframes(self) -> int:
@@ -82,8 +85,11 @@ class RepeatTracker:
 
         self.last_icp = None
         if self.use_map_icp and points is not None:
-            self.last_icp = icp.align(points, self.points[self.k], guess, self.icp_params)
-            self.rel = self.last_icp.pose if self.last_icp.ok else guess
+            pose, fitness, ok = icp.align(points, self.points[self.k], guess,
+                                          self.icp_max_distance, self.icp_max_iterations,
+                                          self.icp_min_fitness)
+            self.last_icp = (pose, fitness, ok)
+            self.rel = pose if ok else guess
         else:
             self.rel = guess
 

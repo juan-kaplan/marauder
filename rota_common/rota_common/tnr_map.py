@@ -22,7 +22,9 @@ from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 
-from rota_common.se2 import IDENTITY, Pose2D, compose
+from rota_common.se2 import IDENTITY, compose
+
+Pose2D = Tuple[float, float, float]
 
 MAP_FILE = 'map.json'
 SCANS_FILE = 'scans.npz'
