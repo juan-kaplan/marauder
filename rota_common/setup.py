@@ -17,7 +17,6 @@ setup(
     maintainer_email='jkaplan@udesa.edu.ar',
     description='Shared library for the rota_* packages: SE(2) poses, message conversions, scans, ICP, cmd_vel publishing.',
     license='Apache-2.0',
-    tests_require=['pytest'],
     entry_points={
         'console_scripts': [],
     },

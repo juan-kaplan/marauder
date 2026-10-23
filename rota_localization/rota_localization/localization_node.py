@@ -1,51 +1,38 @@
 #!/usr/bin/env python3
 """
-localization_node: layer 1 of Teach and Repeat (``docs/tp1/arquitectura.md``).
+Layer 1 of Teach and Repeat. Publishes /rel_odom (reference -> robot),
+/localization/odom (odom -> robot), /localization/reference (a pose in odom
+each time a new reference is made) and TF odom -> reference -> robot_frame.
 
-Publishes
-  /rel_odom                 Odometry, reference -> robot_frame
-  /localization/reference   PoseStamped in odom, once per new reference
-  /localization/odom        Odometry, odom -> robot_frame
-  TF odom -> reference -> robot_frame
-
-The odom -> base TF of Gazebo or the Create 3 must be off: robot_frame can
-only have one parent.
+mode: encoders (wheels), lidar (ICP against the reference scan) or mixed
+(wheels between scans, ICP against the reference scan on each scan).
 """
 
-from typing import List, Optional
+import math
 
+import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
-from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import JointState, LaserScan
-from tf2_ros import TransformBroadcaster
+from tf2_ros import TransformBroadcaster, TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
-from rota_common.icp import IcpParams
-from rota_common.msgs import pose_stamped, pose_to_msg, transform_stamped
-from rota_common.scan import ScanProjector
-from rota_localization.localizer import MODES, EncoderNoise, Localizer, Reference
+from rota_common import icp, se2
+from rota_common.msgs import pose_from_transform, pose_stamped, pose_to_msg, transform_stamped
+from rota_common.scan import scan_to_points
 
-ODOM_FRAME = 'odom'
-REFERENCE_FRAME = 'reference'
-
-# Reliable so no reference is lost, and transient local so a node that starts
-# a bit later (teach_node) still gets the first ones.
+# Reliable and transient local so teach_node gets every reference, even the first.
 REFERENCE_QOS = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                            durability=DurabilityPolicy.TRANSIENT_LOCAL)
 
 
-def to_ns(stamp) -> int:
-    return stamp.sec * 1_000_000_000 + stamp.nanosec
-
-
-def to_msg(ns: int):
-    return Time(nanoseconds=ns).to_msg()
+def seconds(stamp):
+    return stamp.sec + stamp.nanosec * 1e-9
 
 
 class LocalizationNode(Node):
@@ -59,120 +46,166 @@ class LocalizationNode(Node):
         self.declare_parameter('robot_frame', 'base_footprint')
         self.declare_parameter('left_wheel_joint', 'wheel_left_joint')
         self.declare_parameter('right_wheel_joint', 'wheel_right_joint')
-        self.declare_parameter('wheel_radius', 0.033)       # TurtleBot3 burger (m)
-        self.declare_parameter('wheel_separation', 0.160)   # TurtleBot3 burger (m)
+        self.declare_parameter('wheel_radius', 0.033)
+        self.declare_parameter('wheel_separation', 0.160)
         self.declare_parameter('min_scan_range', 0.12)
         self.declare_parameter('max_scan_range', 3.50)
-        self.declare_parameter('icp_max_correspondence_distance', 0.30)
+        self.declare_parameter('icp_max_distance', 0.30)
         self.declare_parameter('icp_max_iterations', 30)
         self.declare_parameter('icp_min_fitness', 0.25)
-        self.declare_parameter('icp_method', 'point_to_plane')
-        self.declare_parameter('icp_degeneracy_ratio', 0.02)
-        self.declare_parameter('scan_timeout', 0.5)         # s, mixed only
-        self.declare_parameter('encoder_noise_std', 0.0)    # m per sqrt(m) per wheel, simulation only
-        self.declare_parameter('encoder_noise_bias', 0.0)   # relative wheel radius difference
-        self.declare_parameter('encoder_noise_seed', -1)    # -1: random
 
-        def param(name):
-            return self.get_parameter(name).value
+        self.mode = self.get_parameter('mode').value
+        if self.mode not in ('encoders', 'lidar', 'mixed'):
+            raise ValueError(f"mode must be encoders, lidar or mixed, got '{self.mode}'")
+        self.tau_d = self.get_parameter('tau_d').value
+        self.tau_theta = self.get_parameter('tau_theta').value
+        self.robot_frame = self.get_parameter('robot_frame').value
+        self.left_joint = self.get_parameter('left_wheel_joint').value
+        self.right_joint = self.get_parameter('right_wheel_joint').value
+        self.wheel_radius = self.get_parameter('wheel_radius').value
+        self.wheel_separation = self.get_parameter('wheel_separation').value
+        self.min_range = self.get_parameter('min_scan_range').value
+        self.max_range = self.get_parameter('max_scan_range').value
+        self.icp_max_distance = self.get_parameter('icp_max_distance').value
+        self.icp_max_iterations = self.get_parameter('icp_max_iterations').value
+        self.icp_min_fitness = self.get_parameter('icp_min_fitness').value
+        self.get_logger().info(f"mode={self.mode} robot_frame={self.robot_frame} "
+                               f"tau_d={self.tau_d} tau_theta={self.tau_theta}")
 
-        mode = str(param('mode')).strip().lower()
-        if mode not in MODES:
-            raise ValueError(f"mode must be one of {MODES}, got '{mode}'")
-        self.robot_frame = str(param('robot_frame'))
-        self.left_joint = str(param('left_wheel_joint'))
-        self.right_joint = str(param('right_wheel_joint'))
-        seed = int(param('encoder_noise_seed'))
-        noise = EncoderNoise(float(param('encoder_noise_std')), float(param('encoder_noise_bias')),
-                             None if seed < 0 else seed)
-        icp_params = IcpParams(
-            max_correspondence_distance=float(param('icp_max_correspondence_distance')),
-            max_iterations=int(param('icp_max_iterations')),
-            min_fitness=float(param('icp_min_fitness')),
-            method=str(param('icp_method')),
-            degeneracy_ratio=float(param('icp_degeneracy_ratio')))
-        self.loc = Localizer(mode, float(param('tau_d')), float(param('tau_theta')),
-                             float(param('wheel_radius')), float(param('wheel_separation')),
-                             icp_params, float(param('scan_timeout')), noise)
+        self.started = False
+        self.stamp = None            # stamp of the latest update
+        self.ref_pose = se2.IDENTITY  # odom -> reference
+        self.rel = se2.IDENTITY       # reference -> robot
+        self.twist = (0.0, 0.0, 0.0)  # robot frame: vx, vy, omega
+        self.ref_points = None        # reference scan, in robot_frame
+        self.num_references = 0
+        self.last_joints = None       # (time, left, right)
+        self.mount = None             # robot_frame -> LiDAR, as (R, t)
 
         self.pub_rel = self.create_publisher(Odometry, '/rel_odom', 10)
         self.pub_odom = self.create_publisher(Odometry, '/localization/odom', 10)
         self.pub_ref = self.create_publisher(PoseStamped, '/localization/reference', REFERENCE_QOS)
         self.tf_broadcaster = TransformBroadcaster(self)
 
-        if mode in ('encoders', 'mixed'):
+        if self.mode in ('encoders', 'mixed'):
             self.create_subscription(JointState, '/joint_states', self.on_joint_states,
                                      qos_profile_sensor_data)
-        if mode in ('lidar', 'mixed'):
+        if self.mode in ('lidar', 'mixed'):
             self.tf_buffer = Buffer()
             self.tf_listener = TransformListener(self.tf_buffer, self)
-            self.project = ScanProjector(self, self.tf_buffer, self.robot_frame,
-                                         float(param('min_scan_range')), float(param('max_scan_range')))
             self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
 
-        self.get_logger().info(
-            f"LocalizationNode: mode='{mode}', robot_frame='{self.robot_frame}', "
-            f"tau_d={self.loc.tau_d} m, tau_theta={self.loc.tau_theta} rad"
-            + (f", wheels '{self.left_joint}'/'{self.right_joint}' r={self.loc.wheel_radius} "
-               f"b={self.loc.wheel_separation}" if mode != 'lidar' else '')
-            + (f", ICP {icp_params.method}" if mode != 'encoders' else '')
-            + (f", encoder noise std={noise.std} bias={noise.bias}" if noise.enabled else ''))
-
-    def on_joint_states(self, msg: JointState):
+    def on_joint_states(self, msg):
         try:
             left = msg.position[msg.name.index(self.left_joint)]
             right = msg.position[msg.name.index(self.right_joint)]
         except (ValueError, IndexError):
-            self.get_logger().warn(
-                f"Wheel joints '{self.left_joint}'/'{self.right_joint}' not in {list(msg.name)}",
-                throttle_duration_sec=5.0)
+            self.get_logger().warn(f"Wheel joints not in {list(msg.name)}", throttle_duration_sec=5.0)
             return
-        self.publish(self.loc.on_wheels(to_ns(msg.header.stamp), left, right))
+        t = seconds(msg.header.stamp)
+        last, self.last_joints = self.last_joints, (t, left, right)
+        if last is None or t <= last[0]:
+            if self.mode == 'encoders' and not self.started:
+                self.start(msg.header.stamp, None)
+                self.publish()
+            return
 
-    def on_scan(self, msg: LaserScan):
+        d_left = self.wheel_radius * (left - last[1])
+        d_right = self.wheel_radius * (right - last[2])
+        d_lin = 0.5 * (d_left + d_right)
+        d_ang = (d_right - d_left) / self.wheel_separation
+        delta = (d_lin * math.cos(0.5 * d_ang), d_lin * math.sin(0.5 * d_ang), d_ang)
+        if not self.started:
+            return  # mixed: the first scan starts the estimate
+        dt = t - last[0]
+        self.rel = se2.compose(self.rel, delta)
+        self.twist = (delta[0] / dt, delta[1] / dt, d_ang / dt)
+        self.stamp = msg.header.stamp
+        if self.mode == 'encoders':
+            self.new_reference_if_needed(msg.header.stamp, None)
+        self.publish()
+
+    def on_scan(self, msg):
         points = self.project(msg)
         if points is None:
             return
-        refs = self.loc.on_scan(to_ns(msg.header.stamp), points)
-        r = self.loc.last_icp
-        if refs is not None and r is not None and not r.ok:
-            self.get_logger().warn(
-                f"ICP against the reference failed (fitness {r.fitness:.2f}), using the guess",
-                throttle_duration_sec=2.0)
-        elif refs is not None and r is not None and r.degenerate:
-            self.get_logger().info(
-                f"ICP poorly constrained in {r.degenerate} direction(s) (corridor?), "
-                f"keeping the guess there", throttle_duration_sec=5.0)
-        self.publish(refs)
-
-    def publish(self, refs: Optional[List[Reference]]):
-        if refs is None:
+        if not self.started:
+            if self.mode == 'mixed' and self.last_joints is None:
+                return  # wait for the wheels
+            self.start(msg.header.stamp, points)
+            self.publish()
             return
-        for ref in refs:
-            self.pub_ref.publish(pose_stamped(to_msg(ref.stamp), ODOM_FRAME, ref.pose))
-            self.get_logger().info(
-                f"Reference #{self.loc.num_references - 1} at "
-                f"({ref.pose[0]:.3f}, {ref.pose[1]:.3f}, {ref.pose[2]:.3f} rad)"
-                + ('' if ref.points is not None or self.loc.mode == 'encoders' else ', without scan'))
 
-        stamp = to_msg(self.loc.stamp)
+        if self.mode == 'lidar':
+            dt = seconds(msg.header.stamp) - seconds(self.stamp)
+            if dt <= 0.0:
+                return
+            guess = se2.compose(self.rel, tuple(v * dt for v in self.twist))  # constant velocity
+        else:
+            guess = self.rel  # the wheels have moved it since the last scan
+        pose, fitness, ok = icp.align(points, self.ref_points, guess, self.icp_max_distance,
+                                      self.icp_max_iterations, self.icp_min_fitness)
+        if not ok:
+            self.get_logger().warn(f"ICP against the reference failed (fitness {fitness:.2f}), "
+                                   "using the guess", throttle_duration_sec=2.0)
+            pose = guess
+        if self.mode == 'lidar':
+            d = se2.between(self.rel, pose)
+            self.twist = (d[0] / dt, d[1] / dt, d[2] / dt)
+            self.stamp = msg.header.stamp
+        self.rel = pose
+        self.new_reference_if_needed(msg.header.stamp, points)
+        self.publish()
+
+    def project(self, msg):
+        """Scan points in robot_frame, using the static LiDAR mount."""
+        if self.mount is None:
+            try:
+                tf = self.tf_buffer.lookup_transform(self.robot_frame, msg.header.frame_id, Time())
+            except TransformException as ex:
+                self.get_logger().warn(f"No TF {self.robot_frame} -> {msg.header.frame_id} yet: {ex}",
+                                       throttle_duration_sec=2.0)
+                return None
+            x, y, theta = pose_from_transform(tf)
+            c, s = math.cos(theta), math.sin(theta)
+            self.mount = (np.array([[c, -s], [s, c]]), np.array([x, y]))
+        R, t = self.mount
+        return scan_to_points(msg, self.min_range, self.max_range) @ R.T + t
+
+    def start(self, stamp, points):
+        self.started = True
+        self.stamp = stamp
+        self.ref_points = points
+        self.publish_reference(stamp)
+
+    def new_reference_if_needed(self, stamp, points):
+        if se2.norm(self.rel) < self.tau_d and abs(self.rel[2]) < self.tau_theta:
+            return
+        self.ref_pose = se2.compose(self.ref_pose, self.rel)
+        self.rel = se2.IDENTITY
+        self.ref_points = points
+        self.publish_reference(stamp)
+
+    def publish_reference(self, stamp):
+        self.pub_ref.publish(pose_stamped(stamp, 'odom', self.ref_pose))
+        self.get_logger().info(f"Reference #{self.num_references} at ({self.ref_pose[0]:.3f}, "
+                               f"{self.ref_pose[1]:.3f}, {self.ref_pose[2]:.3f} rad)")
+        self.num_references += 1
+
+    def publish(self):
         self.tf_broadcaster.sendTransform([
-            transform_stamped(stamp, ODOM_FRAME, REFERENCE_FRAME, self.loc.ref_pose),
-            transform_stamped(stamp, REFERENCE_FRAME, self.robot_frame, self.loc.rel),
-        ])
-        self.pub_rel.publish(self.odometry(stamp, REFERENCE_FRAME, self.loc.rel))
-        self.pub_odom.publish(self.odometry(stamp, ODOM_FRAME, self.loc.odom_pose))
+            transform_stamped(self.stamp, 'odom', 'reference', self.ref_pose),
+            transform_stamped(self.stamp, 'reference', self.robot_frame, self.rel)])
+        self.pub_rel.publish(self.odometry('reference', self.rel))
+        self.pub_odom.publish(self.odometry('odom', se2.compose(self.ref_pose, self.rel)))
 
-    def odometry(self, stamp, frame: str, pose) -> Odometry:
+    def odometry(self, frame, pose):
         msg = Odometry()
-        msg.header.stamp = stamp
+        msg.header.stamp = self.stamp
         msg.header.frame_id = frame
         msg.child_frame_id = self.robot_frame
         msg.pose.pose = pose_to_msg(pose)
-        vx, vy, omega = self.loc.twist
-        msg.twist.twist.linear.x = float(vx)
-        msg.twist.twist.linear.y = float(vy)
-        msg.twist.twist.angular.z = float(omega)
+        msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.angular.z = self.twist
         return msg
 
 
@@ -181,12 +214,10 @@ def main(args=None):
     node = LocalizationNode()
     try:
         rclpy.spin(node)
-    except (KeyboardInterrupt, ExternalShutdownException):
+    except KeyboardInterrupt:
         pass
-    finally:
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
+    node.destroy_node()
+    rclpy.shutdown()
 
 
 if __name__ == '__main__':
