@@ -2,16 +2,19 @@
 """
 Repeat phase of Teach and Repeat.
 
-Follows the map in map_dir with RepeatTracker and publishes /repeat/setpoint
-(in robot_frame, the identity to stop) and TF robot_frame ->
-map_current_keyframe -> map_next_keyframe and robot_frame -> setpoint.
+Follows the chain of keyframes in map_dir. The state is k, the keyframe being
+followed, and rel, the robot pose in its frame. On each scan rel moves with the
+odom delta and is relocalized by ICP against keyframe k; k advances when the
+robot is near keyframe k+1 or past it. Publishes /repeat/setpoint (keyframe k+1
+seen from the robot, the identity once the last keyframe is reached or when the
+localizer's TF is lost) and TF robot_frame -> map_current_keyframe ->
+map_next_keyframe and robot_frame -> setpoint.
 """
 
 import math
 import os
 from collections import deque
 
-import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
@@ -20,16 +23,13 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
-from std_srvs.srv import Trigger
 from tf2_ros import TransformBroadcaster, TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
-from visualization_msgs.msg import Marker, MarkerArray
 
-from rota_common import se2, tnr_map
+from rota_common import icp, se2, tnr_map
 from rota_common.msgs import pose_from_transform, pose_stamped, transform_stamped
-from rota_common.scan import scan_to_points
-from rota_control.repeat_logic import RepeatTracker
+from rota_common.scan import project
 
 TF_WAIT = 0.2     # a queued scan is dropped if its TF has not arrived after this
 TF_MAX_AGE = 0.5  # stop if the newest odom -> robot_frame TF is older than this
@@ -52,7 +52,6 @@ class RepeatNode(Node):
         self.declare_parameter('goal_tolerance', 0.08)
         self.declare_parameter('goal_angle_tolerance', 0.15)
         self.declare_parameter('control_frequency', 20.0)
-        self.declare_parameter('auto_start', True)
         self.declare_parameter('min_scan_range', 0.12)
         self.declare_parameter('max_scan_range', 3.50)
         self.declare_parameter('icp_max_distance', 0.30)
@@ -61,33 +60,33 @@ class RepeatNode(Node):
 
         self.map_dir = os.path.abspath(os.path.expanduser(self.get_parameter('map_dir').value))
         self.robot_frame = self.get_parameter('robot_frame').value
+        self.use_map_icp = self.get_parameter('use_map_icp').value
+        self.advance_dist = self.get_parameter('advance_dist').value
+        self.advance_angle = self.get_parameter('advance_angle').value
+        self.goal_tolerance = self.get_parameter('goal_tolerance').value
+        self.goal_angle_tolerance = self.get_parameter('goal_angle_tolerance').value
         self.min_range = self.get_parameter('min_scan_range').value
         self.max_range = self.get_parameter('max_scan_range').value
-        self.active = self.get_parameter('auto_start').value
+        self.icp_args = (self.get_parameter('icp_max_distance').value,
+                         self.get_parameter('icp_max_iterations').value,
+                         self.get_parameter('icp_min_fitness').value)
 
         meta, keyframes = tnr_map.load(self.map_dir)
         if meta.get('robot_frame', self.robot_frame) != self.robot_frame:
             self.get_logger().warn(f"Map taught with robot_frame={meta['robot_frame']}, "
                                    f"repeating with {self.robot_frame}")
         self.taught = tnr_map.chain_poses(keyframes)
-        self.tracker = RepeatTracker(
-            keyframes,
-            use_map_icp=self.get_parameter('use_map_icp').value,
-            advance_dist=self.get_parameter('advance_dist').value,
-            advance_angle=self.get_parameter('advance_angle').value,
-            goal_tolerance=self.get_parameter('goal_tolerance').value,
-            goal_angle_tolerance=self.get_parameter('goal_angle_tolerance').value,
-            icp_max_distance=self.get_parameter('icp_max_distance').value,
-            icp_max_iterations=self.get_parameter('icp_max_iterations').value,
-            icp_min_fitness=self.get_parameter('icp_min_fitness').value)
+        self.edges = [kf.edge_from_prev for kf in keyframes]  # edges[0] is unused
+        self.points = [kf.points for kf in keyframes]
+        self.last = len(keyframes) - 1
         self.get_logger().info(f"Loaded {len(keyframes)} keyframes from {self.map_dir} "
-                               f"(mode {meta.get('mode', '?')}), "
-                               f"use_map_icp={self.tracker.use_map_icp}")
+                               f"(mode {meta.get('mode', '?')}), use_map_icp={self.use_map_icp}")
 
-        self.mount = None              # robot_frame -> LiDAR, as (R, t)
+        self.k = 0                # the robot starts where the Teach started
+        self.rel = se2.IDENTITY   # keyframe k -> robot, at the latest scan
+        self.odom = None          # odom -> robot, at the latest scan
+        self.done = False
         self.scans = deque(maxlen=10)  # (stamp, points) waiting for their TF
-        self.k_logged = 0
-        self.done_logged = False
         self.actual_path = Path()
         self.actual_path.header.frame_id = 'odom'
         self.last_path_pose = None
@@ -100,34 +99,16 @@ class RepeatNode(Node):
         self.pub_setpoint = self.create_publisher(PoseStamped, '/repeat/setpoint', 10)
         self.pub_taught = self.create_publisher(Path, '/repeat/taught_path', 10)
         self.pub_actual = self.create_publisher(Path, '/repeat/actual_path', 10)
-        self.pub_markers = self.create_publisher(MarkerArray, '/repeat/markers', 10)
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
-        self.create_service(Trigger, '~/start', self.on_start)
-        self.create_service(Trigger, '~/stop', self.on_stop)
         self.create_timer(1.0 / self.get_parameter('control_frequency').value, self.control)
 
     def on_scan(self, msg):
-        if not self.active:
+        points = project(msg, self.tf_buffer, self.robot_frame, self.min_range, self.max_range)
+        if points is None:
+            self.get_logger().warn(f"No TF {self.robot_frame} -> {msg.header.frame_id} yet",
+                                   throttle_duration_sec=2.0)
             return
-        points = self.project(msg)
-        if points is not None:
-            self.scans.append((msg.header.stamp, points))
-
-    def project(self, msg):
-        """Scan points in robot_frame, using the static LiDAR mount."""
-        if self.mount is None:
-            try:
-                tf = self.tf_buffer.lookup_transform(self.robot_frame, msg.header.frame_id, Time())
-            except TransformException as ex:
-                self.get_logger().warn(
-                    f"No TF {self.robot_frame} -> {msg.header.frame_id} yet: {ex}",
-                    throttle_duration_sec=2.0)
-                return None
-            x, y, theta = pose_from_transform(tf)
-            c, s = math.cos(theta), math.sin(theta)
-            self.mount = (np.array([[c, -s], [s, c]]), np.array([x, y]))
-        R, t = self.mount
-        return scan_to_points(msg, self.min_range, self.max_range) @ R.T + t
+        self.scans.append((msg.header.stamp, points))
 
     def process_scans(self):
         now = seconds(self.get_clock().now().to_msg())
@@ -144,16 +125,48 @@ class RepeatNode(Node):
                                        f"at its stamp: {ex}", throttle_duration_sec=2.0)
                 continue
             self.scans.popleft()
-            self.tracker.on_scan(pose_from_transform(tf), points)
-            icp_result = self.tracker.last_icp
-            if icp_result is not None and not icp_result[2]:
-                self.get_logger().warn(f"ICP against keyframe #{self.tracker.k} failed "
-                                       f"(fitness {icp_result[1]:.2f}), using odom",
+            self.update(pose_from_transform(tf), points)
+
+    def update(self, odom, points):
+        """Move rel with the odom delta, relocalize it against keyframe k, advance k."""
+        delta = se2.IDENTITY if self.odom is None else se2.between(self.odom, odom)
+        guess = se2.compose(self.rel, delta)
+        self.odom = odom
+        self.rel = guess
+        if self.use_map_icp:
+            pose, fitness, ok = icp.align(points, self.points[self.k], guess, *self.icp_args)
+            if ok:
+                self.rel = pose
+            else:
+                self.get_logger().warn(f"ICP against keyframe #{self.k} failed "
+                                       f"(fitness {fitness:.2f}), using odom",
                                        throttle_duration_sec=2.0)
-            if self.tracker.k != self.k_logged:
-                self.k_logged = self.tracker.k
-                self.get_logger().info(f"Following keyframe #{self.tracker.k} of "
-                                       f"{self.tracker.num_keyframes - 1}")
+        while self.k < self.last and self.reached_next():
+            self.rel = se2.between(self.edges[self.k + 1], self.rel)
+            self.k += 1
+            self.get_logger().info(f"Following keyframe #{self.k} of {self.last}")
+
+    def reached_next(self):
+        edge = self.edges[self.k + 1]
+        next_robot = se2.between(edge, self.rel)
+        if se2.norm(next_robot) >= self.advance_dist and next_robot[0] < 0.0:
+            return False
+        if se2.norm(edge) >= self.advance_dist:
+            return True
+        # Keyframe k+1 is a turn in place, so its position is met from the start:
+        # also wait until the robot has turned to within advance_angle of it, or past it.
+        return next_robot[2] * math.copysign(1.0, edge[2]) > -self.advance_angle
+
+    def setpoint(self, odom_now):
+        """Keyframe k+1 (or the end of the map) as seen from the robot now."""
+        pose = se2.compose(self.rel, se2.between(self.odom, odom_now))  # keyframe k -> robot
+        target = self.edges[self.k + 1] if self.k < self.last else se2.IDENTITY
+        setpoint = se2.between(pose, target)
+        if (self.k == self.last and se2.norm(setpoint) < self.goal_tolerance
+                and abs(setpoint[2]) < self.goal_angle_tolerance):
+            self.done = True
+            self.get_logger().info(f"Reached the last keyframe (#{self.k}), stopping")
+        return pose, setpoint
 
     def latest_odom(self):
         """Newest odom -> robot_frame pose and stamp, None if missing or too old."""
@@ -166,10 +179,8 @@ class RepeatNode(Node):
         return pose_from_transform(tf), tf.header.stamp
 
     def control(self):
-        if not self.active:
-            return
         self.process_scans()
-        if not self.tracker.started:
+        if self.odom is None:
             self.get_logger().info("Waiting for the first scan and the localizer's TF",
                                    throttle_duration_sec=5.0)
             return
@@ -177,30 +188,25 @@ class RepeatNode(Node):
         if latest is None:
             self.get_logger().warn(f"Lost the TF odom -> {self.robot_frame}, stopping",
                                    throttle_duration_sec=2.0)
-            self.stop_robot()
+            self.pub_setpoint.publish(pose_stamped(self.get_clock().now().to_msg(),
+                                                   self.robot_frame, se2.IDENTITY))
             return
         odom, stamp = latest
 
-        setpoint = self.tracker.setpoint(odom)
+        pose, setpoint = self.setpoint(odom)
+        if self.done:
+            setpoint = se2.IDENTITY
         self.tf_broadcaster.sendTransform([
             transform_stamped(stamp, self.robot_frame, 'map_current_keyframe',
-                              se2.inverse(self.tracker.pose(odom))),
+                              se2.inverse(pose)),
             transform_stamped(stamp, 'map_current_keyframe', 'map_next_keyframe',
-                              self.tracker.next_edge or se2.IDENTITY),
+                              self.edges[self.k + 1] if self.k < self.last else se2.IDENTITY),
             transform_stamped(stamp, self.robot_frame, 'setpoint', setpoint)])
         self.pub_setpoint.publish(pose_stamped(stamp, self.robot_frame, setpoint))
-        if self.tracker.done and not self.done_logged:
-            self.done_logged = True
-            self.get_logger().info(f"Reached the last keyframe (#{self.tracker.k}), stopping")
         self.publish_paths(stamp, odom)
-        self.publish_markers(stamp)
-
-    def stop_robot(self):
-        stamp = self.get_clock().now().to_msg()
-        self.pub_setpoint.publish(pose_stamped(stamp, self.robot_frame, se2.IDENTITY))
 
     def publish_paths(self, stamp, odom):
-        current = self.taught[self.tracker.k]
+        current = self.taught[self.k]
         taught = Path()
         taught.header.stamp = stamp
         taught.header.frame_id = 'map_current_keyframe'
@@ -217,46 +223,10 @@ class RepeatNode(Node):
         self.actual_path.poses.append(pose_stamped(stamp, 'odom', odom))
         self.pub_actual.publish(self.actual_path)
 
-    def publish_markers(self, stamp):
-        m = Marker()
-        m.header.frame_id = self.robot_frame
-        m.header.stamp = stamp
-        m.ns = 'repeat_status'
-        m.type = Marker.TEXT_VIEW_FACING
-        m.pose.position.z = 0.4
-        m.scale.z = 0.12
-        m.color.r = m.color.g = m.color.b = m.color.a = 1.0
-        m.text = f"KF {self.tracker.k}/{self.tracker.num_keyframes - 1}"
-        if self.tracker.done:
-            m.text += ' [DONE]'
-        elif self.tracker.last_icp is not None and not self.tracker.last_icp[2]:
-            m.text += ' [ODOM]'
-        self.pub_markers.publish(MarkerArray(markers=[m]))
-
-    def on_start(self, request, response):
-        self.active = True
-        response.success = True
-        response.message = f"Repeat running, following keyframe #{self.tracker.k}"
-        self.get_logger().info(response.message)
-        return response
-
-    def on_stop(self, request, response):
-        self.active = False
-        self.stop_robot()
-        response.success = True
-        response.message = f"Repeat stopped at keyframe #{self.tracker.k}"
-        self.get_logger().info(response.message)
-        return response
-
 
 def main(args=None):
     rclpy.init(args=args)
-    try:
-        node = RepeatNode()
-    except (FileNotFoundError, ValueError) as ex:
-        rclpy.logging.get_logger('repeat_node').fatal(f"Cannot load the map: {ex}")
-        rclpy.shutdown()
-        return 1
+    node = RepeatNode()
     try:
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
