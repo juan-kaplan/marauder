@@ -2,38 +2,35 @@
 """
 Teach phase of Teach and Repeat.
 
-Each /localization/reference becomes a keyframe (see teach_logic). The map is
-saved to map_dir on ~/save and on shutdown, with one more keyframe at the last
-pose. Publishes /teach/path and /teach/keyframes.
+Each /localization/reference becomes a keyframe: the closest scan to it, and an
+edge to the previous keyframe from ICP (the pose difference if ICP fails). The
+map is saved to map_dir on ~/save and on shutdown, with one more keyframe at the
+last pose. Publishes /teach/path and /teach/keyframes.
 """
 
-import math
 import os
+from collections import deque
 
-import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry, Path
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
 from std_srvs.srv import Trigger
-from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
-from rota_common import se2, tnr_map
-from rota_common.msgs import pose_from_msg, pose_from_transform, pose_stamped, pose_to_msg
-from rota_common.scan import scan_to_points
-from rota_control.teach_logic import TeachRecorder
+from rota_common import icp, se2, tnr_map
+from rota_common.msgs import pose_from_msg, pose_stamped, pose_to_msg
+from rota_common.scan import project
+from rota_common.tnr_map import Keyframe
 
 # Same QoS as localization_node, so the first reference is not lost.
 REFERENCE_QOS = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                            durability=DurabilityPolicy.TRANSIENT_LOCAL)
-MAX_SCAN_OFFSET = 0.1  # warn if a keyframe's scan is further than this from its reference
 
 
 def seconds(stamp):
@@ -61,20 +58,21 @@ class TeachNode(Node):
         self.robot_frame = self.get_parameter('robot_frame').value
         self.min_range = self.get_parameter('min_scan_range').value
         self.max_range = self.get_parameter('max_scan_range').value
+        self.icp_args = (self.get_parameter('icp_max_distance').value,
+                         self.get_parameter('icp_max_iterations').value,
+                         self.get_parameter('icp_min_fitness').value)
         self.meta = {
             'robot_frame': self.robot_frame,
             'mode': self.get_parameter('mode').value,
             'tau_d': self.get_parameter('tau_d').value,
             'tau_theta': self.get_parameter('tau_theta').value,
         }
-        self.recorder = TeachRecorder(
-            icp_max_distance=self.get_parameter('icp_max_distance').value,
-            icp_max_iterations=self.get_parameter('icp_max_iterations').value,
-            icp_min_fitness=self.get_parameter('icp_min_fitness').value)
         self.get_logger().info(f"map_dir={self.map_dir} robot_frame={self.robot_frame}")
 
-        self.mount = None      # robot_frame -> LiDAR, as (R, t)
-        self.last_odom = None  # (stamp, pose) of the latest /localization/odom
+        self.keyframes = []
+        self.scans = deque(maxlen=10)  # (stamp, points)
+        self.pending = []              # (stamp, pose) of references waiting for a scan
+        self.last_odom = None
         self.path = Path()
         self.path.header.frame_id = 'odom'
         self.last_path_pose = None
@@ -90,16 +88,21 @@ class TeachNode(Node):
         self.create_service(Trigger, '~/save', self.on_save)
 
     def on_reference(self, msg):
-        self.added(self.recorder.on_reference(seconds(msg.header.stamp), pose_from_msg(msg)))
+        self.pending.append((seconds(msg.header.stamp), pose_from_msg(msg)))
+        self.add_keyframes()
 
     def on_scan(self, msg):
-        points = self.project(msg)
-        if points is not None:
-            self.added(self.recorder.on_scan(seconds(msg.header.stamp), points))
+        points = project(msg, self.tf_buffer, self.robot_frame, self.min_range, self.max_range)
+        if points is None:
+            self.get_logger().warn(f"No TF {self.robot_frame} -> {msg.header.frame_id} yet",
+                                   throttle_duration_sec=2.0)
+            return
+        self.scans.append((seconds(msg.header.stamp), points))
+        self.add_keyframes()
 
     def on_odom(self, msg):
         p = pose_from_msg(msg)
-        self.last_odom = (seconds(msg.header.stamp), p)
+        self.last_odom = p
         if self.last_path_pose is not None:
             d = se2.between(self.last_path_pose, p)
             if se2.norm(d) < 0.02 and abs(d[2]) < 0.05:
@@ -109,51 +112,35 @@ class TeachNode(Node):
         self.path.poses.append(pose_stamped(msg.header.stamp, 'odom', p))
         self.pub_path.publish(self.path)
 
-    def project(self, msg):
-        """Scan points in robot_frame, using the static LiDAR mount."""
-        if self.mount is None:
-            try:
-                tf = self.tf_buffer.lookup_transform(self.robot_frame, msg.header.frame_id, Time())
-            except TransformException as ex:
-                self.get_logger().warn(
-                    f"No TF {self.robot_frame} -> {msg.header.frame_id} yet: {ex}",
-                    throttle_duration_sec=2.0)
-                return None
-            x, y, theta = pose_from_transform(tf)
-            c, s = math.cos(theta), math.sin(theta)
-            self.mount = (np.array([[c, -s], [s, c]]), np.array([x, y]))
-        R, t = self.mount
-        return scan_to_points(msg, self.min_range, self.max_range) @ R.T + t
-
-    def added(self, keyframes):
-        for kf in keyframes:
-            self.log_keyframe(kf, 'Keyframe')
-            offset = self.recorder.scan_offsets[kf.id]
-            if offset is None:
-                self.get_logger().warn(f"Keyframe #{kf.id} has no scan")
-            elif abs(offset) > MAX_SCAN_OFFSET:
-                self.get_logger().warn(f"Keyframe #{kf.id}: closest scan is {offset:+.3f} s away")
-        if keyframes:
+    def add_keyframes(self):
+        """Make the keyframes of the references whose scan (at or after their stamp) is in."""
+        while self.pending and self.scans and self.scans[-1][0] >= self.pending[0][0]:
+            stamp, pose = self.pending.pop(0)
+            scan = min(self.scans, key=lambda s: abs(s[0] - stamp))
+            kf = self.make_keyframe(stamp, pose, scan[1])
+            self.keyframes.append(kf)
+            self.get_logger().info(
+                f"Keyframe #{kf.id}: {len(kf.points)} points, edge "
+                f"({kf.edge_from_prev[0]:.3f}, {kf.edge_from_prev[1]:.3f}, "
+                f"{kf.edge_from_prev[2]:.3f} rad), ICP "
+                f"{'ok' if kf.edge_icp_ok else 'failed'} (fitness {kf.edge_fitness:.2f})")
             self.publish_keyframes()
 
-    def log_keyframe(self, kf, label):
-        if kf.id == 0:
-            self.get_logger().info(f"{label} #0: {len(kf.points)} points")
-            return
-        x, y, theta = kf.edge_from_prev
-        self.get_logger().info(
-            f"{label} #{kf.id}: {len(kf.points)} points, "
-            f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
-            f"ICP {'ok' if kf.edge_icp_ok else 'failed'} (fitness {kf.edge_fitness:.2f})")
-        if not kf.edge_icp_ok:
-            self.get_logger().warn(f"{label} #{kf.id}: ICP failed, edge from the localizer")
+    def make_keyframe(self, stamp, pose, points):
+        kf = Keyframe(len(self.keyframes), stamp, pose, points=points)
+        if self.keyframes:
+            prev = self.keyframes[-1]
+            guess = se2.between(prev.pose_odom, pose)
+            edge, kf.edge_fitness, kf.edge_icp_ok = icp.align(points, prev.points, guess,
+                                                              *self.icp_args)
+            kf.edge_from_prev = edge if kf.edge_icp_ok else guess
+        return kf
 
     def publish_keyframes(self):
-        keyframes = self.recorder.keyframes
-        anchor = keyframes[0].pose_odom
+        anchor = self.keyframes[0].pose_odom
         stamp = self.get_clock().now().to_msg()
         markers = MarkerArray()
-        for kf, pose in zip(keyframes, tnr_map.chain_poses(keyframes)):
+        for kf, pose in zip(self.keyframes, tnr_map.chain_poses(self.keyframes)):
             m = Marker()
             m.header.frame_id = 'odom'
             m.header.stamp = stamp
@@ -162,37 +149,28 @@ class TeachNode(Node):
             m.type = Marker.ARROW
             m.pose = pose_to_msg(se2.compose(anchor, pose))
             m.scale.x, m.scale.y, m.scale.z = 0.15, 0.03, 0.03
-            ok = kf.id == 0 or kf.edge_icp_ok
-            m.color.r, m.color.g, m.color.b = (0.1, 0.8, 0.2) if ok else (1.0, 0.6, 0.0)
-            m.color.a = 1.0
+            m.color.g, m.color.a = 0.8, 1.0
             markers.markers.append(m)
         self.pub_keyframes.publish(markers)
 
     def save(self):
-        keyframes = list(self.recorder.keyframes)
-        if not keyframes:
-            self.get_logger().warn("No keyframes yet, nothing to save")
+        if not self.keyframes:
             return False
-        end = self.recorder.end_keyframe(*self.last_odom) if self.last_odom else None
-        if end is not None:
-            self.log_keyframe(end, 'End keyframe')
-            keyframes.append(end)
+        keyframes = list(self.keyframes)
+        # The Teach usually ends between two references: one more keyframe at the last pose.
+        if self.last_odom is not None and self.scans:
+            d = se2.between(keyframes[-1].pose_odom, self.last_odom)
+            if se2.norm(d) >= 0.02 or abs(d[2]) >= 0.02:
+                keyframes.append(self.make_keyframe(self.scans[-1][0], self.last_odom,
+                                                    self.scans[-1][1]))
         tnr_map.save(self.map_dir, keyframes, self.meta)
-        failed = sum(1 for kf in keyframes[1:] if not kf.edge_icp_ok)
-        self.get_logger().info(f"Saved {len(keyframes)} keyframes ({failed} edges without ICP) "
-                               f"to {self.map_dir}")
+        self.get_logger().info(f"Saved {len(keyframes)} keyframes to {self.map_dir}")
         return True
 
     def on_save(self, request, response):
         response.success = self.save()
-        response.message = f"{len(self.recorder.keyframes)} keyframes in {self.map_dir}"
-        if self.recorder.pending:
-            response.message += f", {len(self.recorder.pending)} references waiting for a scan"
+        response.message = f"{len(self.keyframes)} keyframes in {self.map_dir}"
         return response
-
-    def shutdown(self):
-        self.added(self.recorder.flush())
-        self.save()
 
 
 def main(args=None):
@@ -202,7 +180,7 @@ def main(args=None):
         rclpy.spin(node)
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
-    node.shutdown()
+    node.save()
     node.destroy_node()
     if rclpy.ok():
         rclpy.shutdown()
