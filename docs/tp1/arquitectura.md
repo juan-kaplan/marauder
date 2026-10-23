@@ -136,10 +136,11 @@ se2.py      normalize_angle(a) · compose(a, b) · inverse(a) · between(a, b) �
 msgs.py     pose_to_msg(p) · pose_from_msg(msg) · pose_stamped(stamp, frame, p)
             transform_stamped(stamp, parent, child, p) · pose_from_transform(msg)
 scan.py     scan_to_points(msg, rmin, rmax) → (N, 2) en el frame del LiDAR
-            ScanProjector(node, tf_buffer, robot_frame, rmin, rmax)(msg) → (N, 2) en robot_frame | None
-icp.py      IcpParams(max_correspondence_distance=0.30, max_iterations=30, min_fitness=0.25)
-            align(source, target, guess, params) → IcpResult(pose, fitness, rmse, ok)
+            # llevarlos a robot_frame (TF fija del LiDAR) lo hace cada nodo, como localization_node
+icp.py      align(source, target, guess, max_distance=0.30, max_iterations=30, min_fitness=0.25)
+                → (pose, fitness, ok)
             # pose = pose del robot de source en el frame del robot de target
+            # point-to-plane; si no corre, devuelve la guess con ok=False
 tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_icp_ok, points)
             save(map_dir, keyframes, meta) · load(map_dir) → (meta, keyframes)
             chain_poses(keyframes) → poses en el frame del keyframe 0
@@ -154,7 +155,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | | `/localization/reference` · `PoseStamped` en `odom`, solo cuando se crea una referencia nueva. El stamp es el del mensaje del sensor que la creó. QoS reliable, depth 100. |
 | | `/localization/odom` · `Odometry` `odom → robot_frame`, para paths y gráficos |
 | TF | `odom → reference` · `reference → robot_frame` |
-| Parámetros | `mode` · `tau_d` 0.30 m · `tau_theta` 0.30 rad · `robot_frame` · `left_wheel_joint` / `right_wheel_joint` (por nombre) · `wheel_radius` · `wheel_separation` · `min/max_scan_range` · `icp_*` · `scan_timeout` (mixed) · `encoder_noise_*` (solo simulación) |
+| Parámetros | `mode` · `tau_d` 0.30 m · `tau_theta` 0.30 rad · `robot_frame` · `left_wheel_joint` / `right_wheel_joint` (por nombre) · `wheel_radius` · `wheel_separation` · `min/max_scan_range` · `icp_max_distance` · `icp_max_iterations` · `icp_min_fitness` |
 
 ### `teach_node` (capa 2, Teach)
 
@@ -218,7 +219,7 @@ graficar.
 |---|---|---|
 | `encoders` | Integra los deltas de las ruedas en cada `/joint_states`. | Cuando se supera `tau_d` o `tau_theta`. |
 | `lidar` | ICP del scan actual **contra el scan de la referencia**, no contra el scan anterior. Estimación inicial: la última `rel_odom` más la última velocidad (modelo de velocidad constante). | En un scan que supera el umbral; ese scan pasa a ser la referencia. |
-| `mixed` | Entre scans integra los encoders. Cuando llega un scan, corre ICP contra la referencia usando esa integración como estimación inicial. | En un scan que supera el umbral. Si no llegan scans durante `scan_timeout`, crea referencias sin scan, y el próximo scan vuelve a fijar la referencia. |
+| `mixed` | Entre scans integra los encoders. Cuando llega un scan, corre ICP contra la referencia usando esa integración como estimación inicial. | En un scan que supera el umbral. Si el LiDAR se corta, no se crean referencias nuevas. |
 
 ```text
 nueva_referencia(stamp, puntos):
@@ -232,7 +233,7 @@ nueva_referencia(stamp, puntos):
 ```text
 al llegar /localization/reference (stamp, pose_n):
     scan_n = el scan del buffer más cercano a stamp   # si todavía no llegó, se espera al siguiente
-    puntos_n = ScanProjector(scan_n)
+    puntos_n = scan_to_points(scan_n) en robot_frame
     si hay keyframe anterior:
         guess = between(pose_{n-1}, pose_n)            # de las poses de las referencias, no de /rel_odom
         r = icp.align(puntos_n, puntos_{n-1}, guess)
@@ -297,10 +298,10 @@ a control_frequency:
 | Etapa | Qué incluye | Resultado |
 |---|---|---|
 | **0. Contrato** | Congelar nombres de tópicos, frames y parámetros, el formato del mapa y las firmas de `rota_common` (este documento). Los tres juntos, el primer día. | Contrato acordado |
-| **1. Base** | `rota_common` con tests, el launch de simulación con el bridge sin `tf` y el modo encoders del localizador. | Un Teach con encoders graba un mapa |
+| **1. Base** | `rota_common`, el launch de simulación con el bridge sin `tf` y el modo encoders del localizador. | Un Teach con encoders graba un mapa |
 | **2. T&R con encoders** | `teach_node` con aristas por ICP, `repeat_node` completo y `diff_control_node` adaptado. | El robot repite en simulación · **4 pts** |
-| **3. Lidar y mixto** | Modo lidar con modelo de velocidad constante y modo mixto con `scan_timeout`. | Los tres modos funcionan en Teach y Repeat · **4 + 2 pts** |
-| **4. Evaluación, robot real y entrega** | Ground truth de Gazebo, ruido configurable en los encoders, gráficos de Teach vs Repeat por modo con y sin ICP de mapa, puesta en marcha en el TB4, README, presentación de 5 minutos y demo. | Entrega |
+| **3. Lidar y mixto** | Modo lidar con modelo de velocidad constante y modo mixto. | Los tres modos funcionan en Teach y Repeat · **4 + 2 pts** |
+| **4. Evaluación, robot real y entrega** | Ground truth de Gazebo, gráficos de Teach vs Repeat por modo con y sin ICP de mapa, puesta en marcha en el TB4, README, presentación de 5 minutos y demo. | Entrega |
 
 ## Reparto entre tres personas
 
@@ -309,10 +310,9 @@ que otro. Las dependencias entre personas se reducen a las firmas del contrato.
 
 ### Persona A: localización
 
-- `se2`, `msgs`, `scan` e `icp` con tests. Se entregan primero, el primer o
+- `se2`, `msgs`, `scan` e `icp`. Se entregan primero, el primer o
   segundo día.
 - `localization_node`: encoders, después lidar, después mixto.
-- Ruido configurable en los encoders, para simulación.
 - TB4: joints de las ruedas por nombre, geometría y `/joint_states`.
 
 Archivos: `rota_common/{se2,msgs,scan,icp}.py` · `rota_localization/`
