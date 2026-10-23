@@ -155,7 +155,7 @@ class TeachNode(Node):
 
     def save(self):
         if not self.keyframes:
-            return False
+            return 0
         keyframes = list(self.keyframes)
         # The Teach usually ends between two references: one more keyframe at the last pose.
         if self.last_odom is not None and self.scans:
@@ -165,11 +165,12 @@ class TeachNode(Node):
                                                     self.scans[-1][1]))
         tnr_map.save(self.map_dir, keyframes, self.meta)
         self.get_logger().info(f"Saved {len(keyframes)} keyframes to {self.map_dir}")
-        return True
+        return len(keyframes)
 
     def on_save(self, request, response):
-        response.success = self.save()
-        response.message = f"{len(self.keyframes)} keyframes in {self.map_dir}"
+        saved = self.save()
+        response.success = saved > 0
+        response.message = f"{saved} keyframes in {self.map_dir}"
         return response
 
 

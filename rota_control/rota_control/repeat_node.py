@@ -162,7 +162,7 @@ class RepeatNode(Node):
         pose = se2.compose(self.rel, se2.between(self.odom, odom_now))  # keyframe k -> robot
         target = self.edges[self.k + 1] if self.k < self.last else se2.IDENTITY
         setpoint = se2.between(pose, target)
-        if (self.k == self.last and se2.norm(setpoint) < self.goal_tolerance
+        if (not self.done and self.k == self.last and se2.norm(setpoint) < self.goal_tolerance
                 and abs(setpoint[2]) < self.goal_angle_tolerance):
             self.done = True
             self.get_logger().info(f"Reached the last keyframe (#{self.k}), stopping")
