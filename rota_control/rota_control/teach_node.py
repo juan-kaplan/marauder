@@ -2,13 +2,9 @@
 """
 Teach phase of Teach and Repeat.
 
-Each /localization/reference becomes a keyframe with its scan, and the edge
-from the previous keyframe is refined by ICP (see teach_logic). The map is
-written to map_dir (map.json + scans.npz) on ~/save and on shutdown, with one
-more keyframe at the last /localization/odom pose so that the stretch after
-the last reference is kept. Publishes
-/teach/path (the localizer's path in odom) and /teach/keyframes (the ICP chain
-of keyframes, anchored at the odom pose of keyframe 0).
+Each /localization/reference becomes a keyframe (see teach_logic). The map is
+saved to map_dir on ~/save and on shutdown, with one more keyframe at the last
+pose. Publishes /teach/path and /teach/keyframes.
 """
 
 import math
@@ -34,12 +30,10 @@ from rota_common.msgs import pose_from_msg, pose_from_transform, pose_stamped, p
 from rota_common.scan import scan_to_points
 from rota_control.teach_logic import TeachRecorder
 
-# Same QoS as localization_node, so the first reference is not lost if this
-# node subscribes a little late.
+# Same QoS as localization_node, so the first reference is not lost.
 REFERENCE_QOS = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
                            durability=DurabilityPolicy.TRANSIENT_LOCAL)
-# A keyframe whose scan is further than this from its reference gets a warning.
-MAX_SCAN_OFFSET = 0.1
+MAX_SCAN_OFFSET = 0.1  # warn if a keyframe's scan is further than this from its reference
 
 
 def seconds(stamp):
@@ -58,7 +52,7 @@ class TeachNode(Node):
         self.declare_parameter('icp_max_distance', 0.30)
         self.declare_parameter('icp_max_iterations', 30)
         self.declare_parameter('icp_min_fitness', 0.25)
-        # Only written to map.json; they should match localization_node's.
+        # Only written to map.json, should match localization_node's.
         self.declare_parameter('mode', 'encoders')
         self.declare_parameter('tau_d', 0.30)
         self.declare_parameter('tau_theta', 0.30)
@@ -79,11 +73,11 @@ class TeachNode(Node):
             icp_min_fitness=self.get_parameter('icp_min_fitness').value)
         self.get_logger().info(f"map_dir={self.map_dir} robot_frame={self.robot_frame}")
 
-        self.mount = None  # robot_frame -> LiDAR, as (R, t)
+        self.mount = None      # robot_frame -> LiDAR, as (R, t)
+        self.last_odom = None  # (stamp, pose) of the latest /localization/odom
         self.path = Path()
         self.path.header.frame_id = 'odom'
         self.last_path_pose = None
-        self.last_odom = None  # (stamp in seconds, pose) of the latest /localization/odom
 
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -103,6 +97,18 @@ class TeachNode(Node):
         if points is not None:
             self.added(self.recorder.on_scan(seconds(msg.header.stamp), points))
 
+    def on_odom(self, msg):
+        p = pose_from_msg(msg)
+        self.last_odom = (seconds(msg.header.stamp), p)
+        if self.last_path_pose is not None:
+            d = se2.between(self.last_path_pose, p)
+            if se2.norm(d) < 0.02 and abs(d[2]) < 0.05:
+                return
+        self.last_path_pose = p
+        self.path.header.stamp = msg.header.stamp
+        self.path.poses.append(pose_stamped(msg.header.stamp, 'odom', p))
+        self.pub_path.publish(self.path)
+
     def project(self, msg):
         """Scan points in robot_frame, using the static LiDAR mount."""
         if self.mount is None:
@@ -121,18 +127,8 @@ class TeachNode(Node):
 
     def added(self, keyframes):
         for kf in keyframes:
+            self.log_keyframe(kf, 'Keyframe')
             offset = self.recorder.scan_offsets[kf.id]
-            if kf.id == 0:
-                self.get_logger().info(f"Keyframe #0: {len(kf.points)} points")
-            else:
-                x, y, theta = kf.edge_from_prev
-                icp_state = 'ok' if kf.edge_icp_ok else 'failed'
-                self.get_logger().info(
-                    f"Keyframe #{kf.id}: {len(kf.points)} points, "
-                    f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
-                    f"ICP {icp_state} (fitness {kf.edge_fitness:.2f})")
-            if kf.id > 0 and not kf.edge_icp_ok:
-                self.get_logger().warn(f"Keyframe #{kf.id}: ICP failed, edge from the localizer")
             if offset is None:
                 self.get_logger().warn(f"Keyframe #{kf.id} has no scan")
             elif abs(offset) > MAX_SCAN_OFFSET:
@@ -140,17 +136,17 @@ class TeachNode(Node):
         if keyframes:
             self.publish_keyframes()
 
-    def on_odom(self, msg):
-        p = pose_from_msg(msg)
-        self.last_odom = (seconds(msg.header.stamp), p)
-        if self.last_path_pose is not None:
-            d = se2.between(self.last_path_pose, p)
-            if se2.norm(d) < 0.02 and abs(d[2]) < 0.05:
-                return
-        self.last_path_pose = p
-        self.path.header.stamp = msg.header.stamp
-        self.path.poses.append(pose_stamped(msg.header.stamp, 'odom', p))
-        self.pub_path.publish(self.path)
+    def log_keyframe(self, kf, label):
+        if kf.id == 0:
+            self.get_logger().info(f"{label} #0: {len(kf.points)} points")
+            return
+        x, y, theta = kf.edge_from_prev
+        self.get_logger().info(
+            f"{label} #{kf.id}: {len(kf.points)} points, "
+            f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
+            f"ICP {'ok' if kf.edge_icp_ok else 'failed'} (fitness {kf.edge_fitness:.2f})")
+        if not kf.edge_icp_ok:
+            self.get_logger().warn(f"{label} #{kf.id}: ICP failed, edge from the localizer")
 
     def publish_keyframes(self):
         keyframes = self.recorder.keyframes
@@ -179,12 +175,8 @@ class TeachNode(Node):
             return False
         end = self.recorder.end_keyframe(*self.last_odom) if self.last_odom else None
         if end is not None:
+            self.log_keyframe(end, 'End keyframe')
             keyframes.append(end)
-            x, y, theta = end.edge_from_prev
-            self.get_logger().info(
-                f"End keyframe #{end.id} at the last pose: {len(end.points)} points, "
-                f"edge ({x:.3f}, {y:.3f}, {theta:.3f} rad), "
-                f"ICP {'ok' if end.edge_icp_ok else 'failed'} (fitness {end.edge_fitness:.2f})")
         tnr_map.save(self.map_dir, keyframes, self.meta)
         failed = sum(1 for kf in keyframes[1:] if not kf.edge_icp_ok)
         self.get_logger().info(f"Saved {len(keyframes)} keyframes ({failed} edges without ICP) "
