@@ -136,7 +136,6 @@ ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=tr
   2. Track its pose in the active keyframe's frame: wheel/LiDAR odometry from the localizer, corrected by ICP against the keyframe's scan.
   3. Publish the next keyframe, seen from the robot, as `/repeat/setpoint`.
   4. Follow it with `diff_control_node` and advance keyframes until the last one is reached.
-* Pass `use_map_icp:=false` to repeat on the localizer alone.
 
 ---
 
@@ -167,8 +166,6 @@ ros2 launch rota_icp odometry_launch.py
 ros2 launch rota_control diff_control_launch.py
 ```
 
-*(Note: If running without Gazebo, e.g. replaying a rosbag that only has `/joint_states`, append `start_odometry:=true` to `teach_launch.py` or `repeat_launch.py` to start `rota_robmob`'s wheel odometry node automatically).*
-
 ---
 
 ## Deploying on Physical TurtleBot 4
@@ -181,10 +178,10 @@ When transitioning from Gazebo simulation to a physical **TurtleBot 4** (iRobot 
    * On physical hardware there is no `/clock` topic. **You must set `use_sim_time:=false`**; otherwise, ROS timers will freeze.
 2. **LiDAR QoS Profile**:
    * The physical RPLIDAR driver publishes `sensor_msgs/msg/LaserScan` with `BEST_EFFORT` reliability (`qos_profile_sensor_data`). Both `teach_node` and `repeat_node` now use `qos_profile_sensor_data`, ensuring seamless compatibility with both physical hardware and simulation.
-3. **Base Odometry (`start_odometry:=false`)**:
-   * The Create 3 base automatically computes fused wheel odometry and broadcasts `odom -> base_link` on `/odom`. Keep `start_odometry:=false` (default).
+3. **Base Odometry TF**:
+   * `localization_node` publishes `odom -> reference -> robot_frame`. The Create 3's own `odom -> base_link` TF must be turned off so that `localization_node` is the only parent of the robot frame. How to do this on the robot is still to be verified.
 4. **Velocity Commands (`/cmd_vel`)**:
-   * `repeat_node` and `diff_control_node` take `cmd_vel_type:=auto|twist|twist_stamped` (default `auto`). In `auto` they look at what is subscribed to `/cmd_vel` (the robot base or the simulator bridge) and send that type; until something subscribes, nothing is sent.
+   * `diff_control_node` takes `cmd_vel_type:=auto|twist|twist_stamped` (default `auto`). In `auto` they look at what is subscribed to `/cmd_vel` (the robot base or the simulator bridge) and send that type; until something subscribes, nothing is sent.
    * Typically: Humble Gazebo Classic and the Create 3 base expect `Twist`; the Jazzy Gazebo (gz) bridge expects `TwistStamped`. Check with `ros2 topic info /cmd_vel -v` and force a type if `auto` picks the wrong one.
    * For keyboard teleoperation during the Teach phase, match the same type (`-p stamped:=true` for `TwistStamped`):
      ```bash
@@ -212,7 +209,7 @@ source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Launch Teach node (with use_sim_time:=false)
-ros2 launch rota_control teach_launch.py use_sim_time:=false rviz:=true
+ros2 launch rota_control teach_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
 ```
 Drive the robot manually along the path. Press `Ctrl+C` when done.
 
@@ -223,7 +220,7 @@ source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Launch Repeat node (with use_sim_time:=false)
-ros2 launch rota_control repeat_launch.py use_sim_time:=false rviz:=true
+ros2 launch rota_control repeat_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
 ```
 
 ## License
