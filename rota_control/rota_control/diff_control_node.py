@@ -56,6 +56,8 @@ class DiffControlNode(Node):
         self.declare_parameter('reference_frame', 'odom')
         self.declare_parameter('robot_frame', 'base_link')
         self.declare_parameter('use_tf', False)
+        # Stop if no goal arrives for this long (seconds), 0 to wait for ever
+        self.declare_parameter('goal_timeout', 0.0)
 
         # Control loop & behavior options
         self.declare_parameter('control_frequency', 20.0)
@@ -80,6 +82,7 @@ class DiffControlNode(Node):
         self.reference_frame = str(self.get_parameter('reference_frame').value)
         self.robot_frame = str(self.get_parameter('robot_frame').value)
         self.use_tf = bool(self.get_parameter('use_tf').value)
+        self.goal_timeout = float(self.get_parameter('goal_timeout').value)
         self.control_frequency = float(self.get_parameter('control_frequency').value)
         self.allow_reverse = bool(self.get_parameter('allow_reverse').value)
         self.scale_linear_by_alpha = bool(self.get_parameter('scale_linear_by_alpha').value)
@@ -89,6 +92,7 @@ class DiffControlNode(Node):
         self.current_pose = None
         self.goal_pose = None
         self.goal_active = False
+        self.goal_time = None
 
         # TF setup
         self.tf_buffer = Buffer()
@@ -134,6 +138,7 @@ class DiffControlNode(Node):
 
         self.goal_pose = (x_g, y_g, theta_g)
         self.goal_active = True
+        self.goal_time = self.get_clock().now()
 
         self.get_logger().info(
             f"New goal setpoint received: x={x_g:.3f}, y={y_g:.3f}, theta={theta_g:.3f} rad ({math.degrees(theta_g):.1f} deg)"
@@ -170,6 +175,13 @@ class DiffControlNode(Node):
     def control_loop(self):
         """Executes the kinematic control law according to diff.md."""
         if not self.goal_active or self.goal_pose is None:
+            return
+
+        if (self.goal_timeout > 0.0
+                and (self.get_clock().now() - self.goal_time).nanoseconds * 1e-9 > self.goal_timeout):
+            self.goal_active = False
+            self.publish_zero_velocity()
+            self.get_logger().warn(f"No goal for {self.goal_timeout} s, stopping")
             return
 
         pose = self.get_current_pose()

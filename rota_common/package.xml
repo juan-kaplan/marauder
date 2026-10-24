@@ -3,7 +3,7 @@
 <package format="3">
   <name>rota_common</name>
   <version>0.0.0</version>
-  <description>Shared library for the rota_* packages: SE(2) poses, message conversions, scans, ICP, cmd_vel publishing.</description>
+  <description>Shared library for the rota_* packages: SE(2) poses, message conversions, scans, ICP, Teach and Repeat map, cmd_vel publishing.</description>
   <maintainer email="jkaplan@udesa.edu.ar">juan-kaplan</maintainer>
   <license>Apache-2.0</license>
 
@@ -12,6 +12,11 @@
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>gazebo_ros</exec_depend>
+  <exec_depend>turtlebot3_gazebo</exec_depend>
   <!-- open3d comes from the venv (requirements.txt), not from rosdep. -->
 
 

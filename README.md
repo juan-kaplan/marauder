@@ -97,54 +97,46 @@ with `#!/usr/bin/env python3`, so they run in the venv and find `open3d`.
 
 The Teach-and-Repeat pipeline operates entirely without a global metric SLAM map or global path planning (A*, Dijkstra). It represents the trajectory as a sequence of **anchor keyframes** $a_k = (l_k, x_k)$ and relative transformations $T_{(k, k+1)} = x_{k+1} \ominus x_k \in SE(2)$, closing the loop on relative pose error using live LiDAR scan matching (Open3D ICP).
 
-### 1. Terminal 1 — Start the Simulation
+### 1. Terminal 1: start the simulation
 
-From the workspace root (`~/Documents/robotica_ws`):
+From the workspace root:
 
 ```bash
 source /opt/ros/<distro>/setup.bash
 source src/marauder/.venv/bin/activate
 source install/setup.bash
 
-# Launches Gazebo world, TurtleBot3 Burger, RViz, and teleop keyboard
-ros2 launch rota_robmob turtlebot3_simulation_environment_launch.py
+# Gazebo world and a TurtleBot3 Burger (gui:=false for no window)
+ros2 launch rota_common sim_launch.py
 ```
 
-### 2. Terminal 2 — Teach Phase (Demonstrate & Record)
-
-From the workspace root (`~/Documents/robotica_ws`):
+### 2. Terminal 2: Teach (demonstrate and record)
 
 ```bash
-source /opt/ros/<distro>/setup.bash
-source src/marauder/.venv/bin/activate
-source install/setup.bash
+# Localization (mode: encoders, lidar or mixed) and the Teach recorder
+ros2 launch rota_control teach_launch.py mode:=mixed map_dir:=data/map rviz:=true
 
-# Launch the Teach recorder (optionally pass rviz:=true to view teach.rviz)
-ros2 launch rota_control teach_launch.py rviz:=true
+# Terminal 3: drive the robot along the path to teach
+ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
-* **Drive the robot**: Use the teleop keyboard window (`w`/`a`/`s`/`d`/`x`) to drive along your desired path.
-* **Anchor sampling**: Keyframes are automatically inserted whenever the robot moves $\ge 0.30\text{ m}$ or turns $\ge 17^\circ$.
-* **Stop recording**: Press `Ctrl+C` in Terminal 2 (or call `/teach_node/stop_recording`). The trajectory is saved to `data/trajectory.json` and `data/trajectory_scans.npz`.
+* **Keyframes** are created by the localizer whenever the robot moves $\ge 0.30\text{ m}$ or turns $\ge 0.30\text{ rad}$ (`tau_d`, `tau_theta`). Each one keeps its LiDAR scan and an ICP edge to the previous one.
+* **Save**: press `Ctrl+C` in Terminal 2 (or call `ros2 service call /teach_node/save std_srvs/srv/Trigger`). The map goes to `map_dir`: `map.json` and `scans.npz`.
 
-### 3. Terminal 2 — Repeat Phase (Autonomous Replay & Tracking)
+### 3. Terminal 2: Repeat (autonomous replay)
 
-From the workspace root (`~/Documents/robotica_ws`):
+Restart the simulation, so the robot is at the pose where the Teach started, and then:
 
 ```bash
-source /opt/ros/<distro>/setup.bash
-source src/marauder/.venv/bin/activate
-source install/setup.bash
-
-# Launch autonomous trajectory tracking with repeat.rviz
-ros2 launch rota_control repeat_launch.py rviz:=true
+ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
 ```
 
 * The robot will:
-  1. Load anchors from `data/trajectory.json` and point clouds from `data/trajectory_scans.npz`.
-  2. Perform Open3D ICP scan matching against reference anchor scans, seeded with wheel odometry displacement.
-  3. Compute relative target setpoints in the robot frame ($T_{target, robot} = T_{k, k+1} \ominus s_k(t)$).
-  4. Follow the path using the Siegwart polar kinematic controller and advance anchors automatically until the final goal is reached.
+  1. Load the keyframes from `map_dir`.
+  2. Track its pose in the active keyframe's frame: wheel/LiDAR odometry from the localizer, corrected by ICP against the keyframe's scan.
+  3. Publish the next keyframe, seen from the robot, as `/repeat/setpoint`.
+  4. Follow it with `diff_control_node` and advance keyframes until the last one is reached.
+* Pass `use_map_icp:=false` to repeat on the localizer alone.
 
 ---
 
@@ -152,17 +144,16 @@ ros2 launch rota_control repeat_launch.py rviz:=true
 
 Preconfigured RViz configuration files are provided in [`rota_control/config/`](rota_control/config):
 
-* **[`teach.rviz`](rota_control/config/teach.rviz)**: Displays the demonstrated anchor points (arrows), LiDAR scan (`/scan`), and the accumulating route (`/teach/path`).
+* **[`teach.rviz`](rota_control/config/teach.rviz)**: Displays the keyframes (`/teach/keyframes`, arrows), LiDAR scan (`/scan`), and the accumulating route (`/teach/path`).
 * **[`repeat.rviz`](rota_control/config/repeat.rviz)**: Displays both paths simultaneously for real-time comparison:
   * **Taught Reference Path**: `/repeat/taught_path` (Bright Green, width 0.04m)
   * **Actual Repeat Path**: `/repeat/actual_path` (Cyan / Blue, width 0.035m)
-  * **Status & Target Markers**: `/repeat/markers` (shows active waypoint arrow and live status)
   * **Dynamic TF Frames**:
-    * `current_anchor`: Coordinate frame of the currently active keyframe anchor.
-    * `target_anchor`: Coordinate frame of the next goal anchor.
-    * `base_link_icp`: Measured robot base pose according to LiDAR ICP scan matching.
+    * `map_current_keyframe`: Coordinate frame of the keyframe being followed.
+    * `map_next_keyframe`: Coordinate frame of the next keyframe.
+    * `setpoint`: The setpoint sent to the controller.
 
-> **Tip**: In RViz, set **Fixed Frame** to `current_anchor` to observe the robot's motion relative to the active keyframe reference.
+> **Tip**: In RViz, set **Fixed Frame** to `map_current_keyframe` to observe the robot's motion relative to the active keyframe.
 
 ---
 

@@ -114,11 +114,12 @@ marauder/
 │   ├── transformations.py  (ya existe)
 │   ├── cmd_vel.py          (ya existe)
 │   ├── se2.py  msgs.py  scan.py  icp.py  tnr_map.py
+│   └── launch/   sim_launch.py
 ├── rota_localization/      NUEVO · capa 1
 │   └── localization_node.py
 ├── rota_control/           capa 2 + control
 │   ├── teach_node.py  repeat_node.py  diff_control_node.py
-│   ├── launch/   tnr_sim_launch.py  teach_launch.py  repeat_launch.py
+│   ├── launch/   teach_launch.py  repeat_launch.py
 │   ├── config/   tb3_sim.yaml  tb4.yaml  tnr_bridge.yaml  teach.rviz  repeat.rviz
 │   └── scripts/  plot_teach_vs_repeat.py
 ├── rota_icp/  rota_robmob/ TPs de clase anteriores: no se tocan
@@ -136,7 +137,8 @@ se2.py      normalize_angle(a) · compose(a, b) · inverse(a) · between(a, b) �
 msgs.py     pose_to_msg(p) · pose_from_msg(msg) · pose_stamped(stamp, frame, p)
             transform_stamped(stamp, parent, child, p) · pose_from_transform(msg)
 scan.py     scan_to_points(msg, rmin, rmax) → (N, 2) en el frame del LiDAR
-            # llevarlos a robot_frame (TF fija del LiDAR) lo hace cada nodo, como localization_node
+            project(msg, tf_buffer, robot_frame, rmin, rmax) → (N, 2) en robot_frame | None
+            # usa la TF fija del LiDAR; None mientras no esté
 icp.py      align(source, target, guess, max_distance=0.30, max_iterations=30, min_fitness=0.25)
                 → (pose, fitness, ok)
             # pose = pose del robot de source en el frame del robot de target
@@ -164,17 +166,16 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | Suscribe | `/localization/reference` · `/scan` (en un buffer de unos 50 scans) · `/localization/odom` (para el path) |
 | Publica | `/teach/path` (`Path` en `odom`) · `/teach/keyframes` (`MarkerArray`) |
 | Servicios | `~/save` (`Trigger`). También guarda al apagarse. |
-| Parámetros | `map_dir` (ruta absoluta en el log) · `robot_frame` · `min/max_scan_range` · `icp_*` |
+| Parámetros | `map_dir` (ruta absoluta en el log) · `robot_frame` · `min/max_scan_range` · `icp_*` · `mode`, `tau_d`, `tau_theta` (solo para la metadata de `map.json`; tienen que coincidir con los de `localization_node`) |
 
 ### `repeat_node` (capa 2, Repeat)
 
 | | |
 |---|---|
 | Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
-| Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` · `/repeat/markers` |
+| Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
-| Servicios | `~/start` · `~/stop` |
-| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `goal_tolerance` 0.08 m · `goal_angle_tolerance` 0.15 rad · `control_frequency` 20 Hz · `auto_start` · `icp_*` |
+| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
 
 ### `diff_control_node` (control)
 
@@ -182,7 +183,8 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 |---|---|
 | Suscribe | `goal_topic` = `/repeat/setpoint`. Si el frame del objetivo es `robot_frame`, toma la pose del robot como (0, 0, 0). Se mantiene el modo `/goal_pose` en `odom` de la clase 4. |
 | Publica | `/cmd_vel` (`cmd_vel_type:=auto`, como ya está) |
-| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `setpoint_timeout` (0.5 s) sin setpoint, frena. |
+| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `goal_timeout` (0.5 s en `repeat_launch.py`, 0 = apagado) sin setpoint, frena. |
+| Parámetros para el Repeat | `goal_topic:=/repeat/setpoint` · `use_tf:=true` · `reference_frame` y `robot_frame` = `base_footprint` |
 
 ### Mapa en disco (`data/map/`)
 
@@ -199,14 +201,13 @@ graficar.
 
 ### Launches y simulación
 
-- `tnr_sim_launch.py`: mundo de gz, robot_state_publisher, spawn del TB3 y un
-  bridge propio (`tnr_bridge.yaml`) **sin** la entrada `tf`, además de teleop
-  opcional. En Humble, con Gazebo Classic, hay que poner `publish_odom_tf` en
-  false en el modelo.
-- `teach_launch.py mode:=… robot:=tb3_sim map_dir:=… rviz:=true` lanza
-  `localization_node`, `teach_node` y RViz.
-- `repeat_launch.py mode:=… robot:=tb3_sim map_dir:=… use_map_icp:=true rviz:=true`
-  lanza `localization_node`, `repeat_node`, `diff_control_node` y RViz.
+- `rota_common/launch/sim_launch.py`: solo la simulación (mundo de Gazebo,
+  TB3 con `publish_odom_tf` en false). Se corre aparte de Teach y Repeat:
+  `ros2 launch rota_common sim_launch.py`.
+- `teach_launch.py mode:=… map_dir:=… rviz:=true` lanza `localization_node`,
+  `teach_node` y RViz.
+- `repeat_launch.py mode:=… map_dir:=… use_map_icp:=true rviz:=true` lanza
+  `localization_node`, `repeat_node`, `diff_control_node` y RViz.
 - `robot:=tb3_sim|tb4` carga `config/<robot>.yaml`: frames, joints de las
   ruedas, geometría, tópicos y `use_sim_time`. En el TB4, apagar
   `publish_odom_tfs` del Create 3.
@@ -239,6 +240,11 @@ al llegar /localization/reference (stamp, pose_n):
         r = icp.align(puntos_n, puntos_{n-1}, guess)
         arista = r.pose si r.ok, si no guess           # se guardan el fitness y edge_icp_ok
     guardar Keyframe(n, stamp, pose_n, arista, puntos_n)
+
+al guardar el mapa (~/save o al apagarse):
+    pose_fin = última /localization/odom
+    si se movió ≥ 2 cm o 0.02 rad desde el último keyframe:
+        agregar al mapa un keyframe más en pose_fin, igual que los otros   # el tramo final no se pierde
 ```
 
 En modo lidar este ICP repite el último cálculo del localizador y sirve de
@@ -260,15 +266,20 @@ por cada scan (t):
     odom_ultimo = odom_t
     mientras k < N-1:
         T_next_robot = between(arista[k+1], T_kf_robot)
-        si norm(T_next_robot) < advance_dist o T_next_robot.x ≥ 0:   # cerca del siguiente, o ya lo pasó
-            T_kf_robot = T_next_robot; k += 1                       # cambia de marco sin relocalizar
+        cerca_o_paso = norm(T_next_robot) < advance_dist o T_next_robot.x ≥ 0   # cerca del siguiente, o ya lo pasó
+        si norm(arista[k+1]) < advance_dist:                    # k+1 es casi un giro en el lugar
+            giro = T_next_robot.θ · signo(arista[k+1].θ) > -advance_angle   # ya giró hasta k+1, o más
+        si no: giro = verdadero
+        si cerca_o_paso y giro:
+            T_kf_robot = T_next_robot; k += 1                   # cambia de marco sin relocalizar
         si no: salir
 
 a control_frequency:
     pose = T_kf_robot ⊕ between(odom_ultimo, odom_ahora)
     objetivo = arista[k+1] si k < N-1, si no identidad
     setpoint = between(pose, objetivo)                 # en robot_frame
-    si k == N-1 y el robot está dentro de la tolerancia: setpoint = identidad (frena)
+    si k == N-1: el setpoint queda en el último keyframe y el controlador frena
+                 con su propia tolerancia (un setpoint identidad ya llegó tarde: el pose es del último scan)
     publicar setpoint y las TF
 ```
 
@@ -287,6 +298,24 @@ a control_frequency:
   Repeat solo usa deltas, no depende del origen de `odom`.
 - **Setpoint = keyframe siguiente.** Es lo que pide la consigna y lo que hace
   el código actual. Un lookahead sobre la cadena queda como mejora posible.
+- **En los giros en el lugar, para avanzar también cuenta el ángulo.**
+  Agregado en el PR de Teach and Repeat (persona B), para revisar. Un giro en
+  el lugar en el Teach deja un keyframe cada `tau_theta`, todos en el mismo
+  punto. Con la regla de solo distancia el Repeat los salteaba todos de golpe
+  y no hacía el giro: en una prueba con un giro de 180°, pasaba por 4 de 16
+  keyframes. Ahora, si el keyframe siguiente está a menos de `advance_dist`
+  del actual, además hay que haber girado hasta `advance_angle` de su
+  orientación, o más allá. Así pasa por los 16. Los keyframes que avanzan más
+  que `advance_dist` siguen con la regla de distancia, para no frenar al robot
+  si en una curva queda adelantado. El controlador no cambia: con el objetivo
+  a menos de `dist_tolerance` ya gira en el lugar.
+- **El Teach guarda un keyframe más al final.** Agregado en el PR de Teach and
+  Repeat (persona B), para revisar. Las referencias salen cada `tau_d` o
+  `tau_theta`, así que el Teach casi siempre termina entre dos, y el tramo
+  posterior a la última referencia (hasta `tau_d`) no quedaba en el mapa. En
+  Gazebo, en modos lidar y mixed, faltaban 29 cm del final. Ahora, al guardar,
+  `teach_node` agrega un keyframe en la última pose de `/localization/odom`,
+  con su scan y su arista por ICP, si el robot se movió desde el último.
 - **El setpoint va en el frame del robot.** El controlador no necesita
   localizarse. Con un setpoint identidad frena, y además hay un timeout de
   seguridad.

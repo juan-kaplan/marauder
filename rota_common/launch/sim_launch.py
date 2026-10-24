@@ -12,7 +12,7 @@ from launch_ros.actions import Node
 # TurtleBot3 in Gazebo with its own odom -> base_footprint TF turned off, so
 # localization_node is the only parent of base_footprint. Gazebo's /odom topic
 # stays on, and works as the ground truth.
-#   ros2 launch rota_localization sim_launch.py mode:=mixed
+#   ros2 launch rota_common sim_launch.py
 
 
 def patched_model():
@@ -34,7 +34,6 @@ def generate_launch_description():
         SetEnvironmentVariable('TURTLEBOT3_MODEL', 'burger'),
         SetEnvironmentVariable('OMP_NUM_THREADS', '1'),
         SetEnvironmentVariable('GAZEBO_MODEL_DATABASE_URI', ''),  # the old model server is gone, Gazebo hangs on it
-        DeclareLaunchArgument('mode', default_value='encoders'),
         DeclareLaunchArgument('gui', default_value='true'),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(tb3, 'launch', 'robot_state_publisher.launch.py')),
@@ -47,6 +46,4 @@ def generate_launch_description():
             condition=IfCondition(LaunchConfiguration('gui'))),
         Node(package='gazebo_ros', executable='spawn_entity.py', output='screen',
              arguments=['-entity', 'burger', '-file', patched_model(), '-x', '-2.0', '-y', '-0.5', '-z', '0.01']),
-        Node(package='rota_localization', executable='localization_node', output='screen',
-             parameters=[{'use_sim_time': True, 'mode': LaunchConfiguration('mode')}]),
     ])
