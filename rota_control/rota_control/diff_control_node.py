@@ -141,7 +141,8 @@ class DiffControlNode(Node):
         self.goal_time = self.get_clock().now()
 
         self.get_logger().info(
-            f"New goal setpoint received: x={x_g:.3f}, y={y_g:.3f}, theta={theta_g:.3f} rad ({math.degrees(theta_g):.1f} deg)"
+            f"New goal setpoint received: x={x_g:.3f}, y={y_g:.3f}, theta={theta_g:.3f} rad ({math.degrees(theta_g):.1f} deg)",
+            throttle_duration_sec=1.0
         )
 
     def on_odom(self, msg: Odometry):
@@ -205,7 +206,8 @@ class DiffControlNode(Node):
                 # Goal position and orientation achieved
                 self.goal_active = False
                 self.publish_zero_velocity()
-                self.get_logger().info(f"Goal pose reached successfully! (x={x:.3f}, y={y:.3f}, theta={theta:.3f})")
+                self.get_logger().info(f"Goal pose reached successfully! (x={x:.3f}, y={y:.3f}, theta={theta:.3f})",
+                                       throttle_duration_sec=1.0)
                 return
             else:
                 # Arrived at position; rotate in place to match target orientation
