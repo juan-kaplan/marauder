@@ -10,21 +10,19 @@ mode: encoders (wheels), lidar (ICP against the reference scan) or mixed
 
 import math
 
-import numpy as np
 import rclpy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
-from rclpy.time import Time
 from sensor_msgs.msg import JointState, LaserScan
-from tf2_ros import TransformBroadcaster, TransformException
+from tf2_ros import TransformBroadcaster
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
 from rota_common import icp, se2
-from rota_common.msgs import pose_from_transform, pose_stamped, pose_to_msg, transform_stamped
-from rota_common.scan import scan_to_points
+from rota_common.msgs import pose_stamped, pose_to_msg, transform_stamped
+from rota_common.scan import project
 
 # Reliable and transient local so teach_node gets every reference, even the first.
 REFERENCE_QOS = QoSProfile(depth=100, reliability=ReliabilityPolicy.RELIABLE,
@@ -80,7 +78,6 @@ class LocalizationNode(Node):
         self.ref_points = None        # reference scan, in robot_frame
         self.num_references = 0
         self.last_joints = None       # (time, left, right)
-        self.mount = None             # robot_frame -> LiDAR, as (R, t)
 
         self.pub_rel = self.create_publisher(Odometry, '/rel_odom', 10)
         self.pub_odom = self.create_publisher(Odometry, '/localization/odom', 10)
@@ -126,8 +123,10 @@ class LocalizationNode(Node):
         self.publish()
 
     def on_scan(self, msg):
-        points = self.project(msg)
+        points = project(msg, self.tf_buffer, self.robot_frame, self.min_range, self.max_range)
         if points is None:
+            self.get_logger().warn(f"No TF {self.robot_frame} -> {msg.header.frame_id} yet",
+                                   throttle_duration_sec=2.0)
             return
         if not self.started:
             if self.mode == 'mixed' and self.last_joints is None:
@@ -156,21 +155,6 @@ class LocalizationNode(Node):
         self.rel = pose
         self.new_reference_if_needed(msg.header.stamp, points)
         self.publish()
-
-    def project(self, msg):
-        """Scan points in robot_frame, using the static LiDAR mount."""
-        if self.mount is None:
-            try:
-                tf = self.tf_buffer.lookup_transform(self.robot_frame, msg.header.frame_id, Time())
-            except TransformException as ex:
-                self.get_logger().warn(f"No TF {self.robot_frame} -> {msg.header.frame_id} yet: {ex}",
-                                       throttle_duration_sec=2.0)
-                return None
-            x, y, theta = pose_from_transform(tf)
-            c, s = math.cos(theta), math.sin(theta)
-            self.mount = (np.array([[c, -s], [s, c]]), np.array([x, y]))
-        R, t = self.mount
-        return scan_to_points(msg, self.min_range, self.max_range) @ R.T + t
 
     def start(self, stamp, points):
         self.started = True
