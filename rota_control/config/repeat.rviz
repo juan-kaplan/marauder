@@ -87,18 +87,6 @@ Visualization Manager:
       Use Fixed Frame: true
       Use rainbow: true
       Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: Repeat Markers
-      Namespaces:
-        {repeat_status: true, repeat_target: true}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /repeat/markers
-      Value: true
     - Alpha: 0.9
       Buffer Length: 1
       Class: rviz_default_plugins/Path
@@ -154,30 +142,6 @@ Visualization Manager:
         Value: /repeat/actual_path
       Value: true
     - Angle Tolerance: 0.1
-      Class: rviz_default_plugins/Odometry
-      Color: 255; 255; 255
-      Enabled: true
-      Keep: 100
-      Length: 0.3
-      Name: Odometry
-      Position Tolerance: 0.1
-      Shape:
-        Alpha: 1
-        Axes Length: 0.2
-        Axes Radius: 0.02
-        Color: 255; 25; 0
-        Head Length: 0.1
-        Head Radius: 0.05
-        Shaft Length: 0.2
-        Shaft Radius: 0.02
-        Value: Arrow
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /odom
-      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
