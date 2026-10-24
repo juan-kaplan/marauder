@@ -278,7 +278,8 @@ a control_frequency:
     pose = T_kf_robot ⊕ between(odom_ultimo, odom_ahora)
     objetivo = arista[k+1] si k < N-1, si no identidad
     setpoint = between(pose, objetivo)                 # en robot_frame
-    si k == N-1 y el robot está dentro de la tolerancia: setpoint = identidad (frena)
+    si k == N-1: el setpoint queda en el último keyframe y el controlador frena
+                 con su propia tolerancia (un setpoint identidad ya llegó tarde: el pose es del último scan)
     publicar setpoint y las TF
 ```
 
