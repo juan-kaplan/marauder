@@ -175,7 +175,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
 | Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
-| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
+| Parámetros | `map_dir` · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
 
 ### `diff_control_node` (control)
 
@@ -206,7 +206,7 @@ graficar.
   `ros2 launch rota_common sim_launch.py`.
 - `teach_launch.py mode:=… map_dir:=… rviz:=true` lanza `localization_node`,
   `teach_node` y RViz.
-- `repeat_launch.py mode:=… map_dir:=… use_map_icp:=true rviz:=true` lanza
+- `repeat_launch.py mode:=… map_dir:=… rviz:=true` lanza
   `localization_node`, `repeat_node`, `diff_control_node` y RViz.
 - `robot:=tb3_sim|tb4` carga `config/<robot>.yaml`: frames, joints de las
   ruedas, geometría, tópicos y `use_sim_time`. En el TB4, apagar
@@ -258,11 +258,8 @@ inicio: k = 0, T_kf_robot = identidad                  # se supone que arranca e
 por cada scan (t):
     odom_t = TF odom → robot al tiempo t
     guess  = T_kf_robot ⊕ between(odom_ultimo, odom_t)
-    si use_map_icp:
-        r = icp.align(puntos(scan), puntos_kf[k], guess)
-        T_kf_robot = r.pose si r.ok, si no guess
-    si no:
-        T_kf_robot = guess
+    r = icp.align(puntos(scan), puntos_kf[k], guess)
+    T_kf_robot = r.pose si r.ok, si no guess
     odom_ultimo = odom_t
     mientras k < N-1:
         T_next_robot = between(arista[k+1], T_kf_robot)
@@ -319,8 +316,8 @@ a control_frequency:
 - **El setpoint va en el frame del robot.** El controlador no necesita
   localizarse. Con un setpoint identidad frena, y además hay un timeout de
   seguridad.
-- **`use_map_icp:=false` como caso de referencia.** Permite mostrar cuánto
-  aporta el ICP contra el mapa y cómo deriva cada modo sin él.
+- **El Repeat siempre se relocaliza contra el keyframe enseñado**, como en
+  Sprunk et al.
 
 ## Plan global
 
@@ -351,8 +348,7 @@ Archivos: `rota_common/{se2,msgs,scan,icp}.py` · `rota_localization/`
 - `tnr_map`: guardar, cargar y encadenar aristas.
 - `teach_node`: buffer de scans, avisos de referencia, aristas por ICP,
   guardado y visualización.
-- `repeat_node`: ICP contra el keyframe, Δodom, avance, TF, setpoint y
-  `use_map_icp`.
+- `repeat_node`: ICP contra el keyframe, Δodom, avance, TF y setpoint.
 - Tests de la lógica pura: avance de keyframe y encadenamiento.
 
 Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py` ·
@@ -388,7 +384,6 @@ Archivos: `rota_control/diff_control_node.py` · `rota_control/launch/` ·
 
 - **Profesor:** ¿los 4/4/2 puntos se refieren al modo de la capa 1, con el ICP
   de mapa activo en los tres?
-- **Profesor:** ¿suma mostrar el caso `use_map_icp:=false` en la comparación?
 - **Profesor:** `/rel_odom` lo publica `localization_node`, lanzado dentro de
   `teach_launch.py`. ¿Cuenta como "el nodo de aprendizaje"?
 - **Equipo:** ¿renombrar `rota_control` a `rota_tnr`? Es solo prolijidad; por
