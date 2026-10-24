@@ -46,7 +46,6 @@ class RepeatNode(Node):
 
         self.declare_parameter('map_dir', 'data/map')
         self.declare_parameter('robot_frame', 'base_footprint')
-        self.declare_parameter('use_map_icp', True)
         self.declare_parameter('advance_dist', 0.20)
         self.declare_parameter('advance_angle', 0.15)
         self.declare_parameter('control_frequency', 20.0)
@@ -58,7 +57,6 @@ class RepeatNode(Node):
 
         self.map_dir = os.path.abspath(os.path.expanduser(self.get_parameter('map_dir').value))
         self.robot_frame = self.get_parameter('robot_frame').value
-        self.use_map_icp = self.get_parameter('use_map_icp').value
         self.advance_dist = self.get_parameter('advance_dist').value
         self.advance_angle = self.get_parameter('advance_angle').value
         self.min_range = self.get_parameter('min_scan_range').value
@@ -76,7 +74,7 @@ class RepeatNode(Node):
         self.points = [kf.points for kf in keyframes]
         self.last = len(keyframes) - 1
         self.get_logger().info(f"Loaded {len(keyframes)} keyframes from {self.map_dir} "
-                               f"(mode {meta.get('mode', '?')}), use_map_icp={self.use_map_icp}")
+                               f"(mode {meta.get('mode', '?')})")
 
         self.k = 0                # the robot starts where the Teach started
         self.rel = se2.IDENTITY   # keyframe k -> robot, at the latest scan
@@ -128,14 +126,13 @@ class RepeatNode(Node):
         guess = se2.compose(self.rel, delta)
         self.odom = odom
         self.rel = guess
-        if self.use_map_icp:
-            pose, fitness, ok = icp.align(points, self.points[self.k], guess, *self.icp_args)
-            if ok:
-                self.rel = pose
-            else:
-                self.get_logger().warn(f"ICP against keyframe #{self.k} failed "
-                                       f"(fitness {fitness:.2f}), using odom",
-                                       throttle_duration_sec=2.0)
+        pose, fitness, ok = icp.align(points, self.points[self.k], guess, *self.icp_args)
+        if ok:
+            self.rel = pose
+        else:
+            self.get_logger().warn(f"ICP against keyframe #{self.k} failed "
+                                   f"(fitness {fitness:.2f}), using odom",
+                                   throttle_duration_sec=2.0)
         while self.k < self.last and self.reached_next():
             self.rel = se2.between(self.edges[self.k + 1], self.rel)
             self.k += 1
