@@ -5,10 +5,10 @@ Repeat phase of Teach and Repeat.
 Follows the chain of keyframes in map_dir. The state is k, the keyframe being
 followed, and rel, the robot pose in its frame. On each scan rel moves with the
 odom delta and is relocalized by ICP against keyframe k; k advances when the
-robot is near keyframe k+1 or past it. Publishes /repeat/setpoint (keyframe k+1
-seen from the robot, the identity once the last keyframe is reached or when the
-localizer's TF is lost) and TF robot_frame -> map_current_keyframe ->
-map_next_keyframe and robot_frame -> setpoint.
+robot is near keyframe k+1 or past it. Publishes /repeat/setpoint (keyframe k+1 seen
+from the robot, the last keyframe itself at the end, the identity when the localizer's
+TF is lost) and TF robot_frame -> map_current_keyframe -> map_next_keyframe and
+robot_frame -> setpoint. The controller stops the robot at the last keyframe.
 """
 
 import math
@@ -165,7 +165,7 @@ class RepeatNode(Node):
         if (not self.done and self.k == self.last and se2.norm(setpoint) < self.goal_tolerance
                 and abs(setpoint[2]) < self.goal_angle_tolerance):
             self.done = True
-            self.get_logger().info(f"Reached the last keyframe (#{self.k}), stopping")
+            self.get_logger().info(f"Reached the last keyframe (#{self.k})")
         return pose, setpoint
 
     def latest_odom(self):
@@ -194,8 +194,6 @@ class RepeatNode(Node):
         odom, stamp = latest
 
         pose, setpoint = self.setpoint(odom)
-        if self.done:
-            setpoint = se2.IDENTITY
         self.tf_broadcaster.sendTransform([
             transform_stamped(stamp, self.robot_frame, 'map_current_keyframe',
                               se2.inverse(pose)),
