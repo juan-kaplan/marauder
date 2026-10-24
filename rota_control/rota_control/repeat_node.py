@@ -49,8 +49,6 @@ class RepeatNode(Node):
         self.declare_parameter('use_map_icp', True)
         self.declare_parameter('advance_dist', 0.20)
         self.declare_parameter('advance_angle', 0.15)
-        self.declare_parameter('goal_tolerance', 0.08)
-        self.declare_parameter('goal_angle_tolerance', 0.15)
         self.declare_parameter('control_frequency', 20.0)
         self.declare_parameter('min_scan_range', 0.12)
         self.declare_parameter('max_scan_range', 3.50)
@@ -63,8 +61,6 @@ class RepeatNode(Node):
         self.use_map_icp = self.get_parameter('use_map_icp').value
         self.advance_dist = self.get_parameter('advance_dist').value
         self.advance_angle = self.get_parameter('advance_angle').value
-        self.goal_tolerance = self.get_parameter('goal_tolerance').value
-        self.goal_angle_tolerance = self.get_parameter('goal_angle_tolerance').value
         self.min_range = self.get_parameter('min_scan_range').value
         self.max_range = self.get_parameter('max_scan_range').value
         self.icp_args = (self.get_parameter('icp_max_distance').value,
@@ -85,7 +81,6 @@ class RepeatNode(Node):
         self.k = 0                # the robot starts where the Teach started
         self.rel = se2.IDENTITY   # keyframe k -> robot, at the latest scan
         self.odom = None          # odom -> robot, at the latest scan
-        self.done = False
         self.scans = deque(maxlen=10)  # (stamp, points) waiting for their TF
         self.actual_path = Path()
         self.actual_path.header.frame_id = 'odom'
@@ -162,10 +157,6 @@ class RepeatNode(Node):
         pose = se2.compose(self.rel, se2.between(self.odom, odom_now))  # keyframe k -> robot
         target = self.edges[self.k + 1] if self.k < self.last else se2.IDENTITY
         setpoint = se2.between(pose, target)
-        if (not self.done and self.k == self.last and se2.norm(setpoint) < self.goal_tolerance
-                and abs(setpoint[2]) < self.goal_angle_tolerance):
-            self.done = True
-            self.get_logger().info(f"Reached the last keyframe (#{self.k})")
         return pose, setpoint
 
     def latest_odom(self):

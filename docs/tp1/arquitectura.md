@@ -175,7 +175,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
 | Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
-| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `goal_tolerance` 0.08 m · `goal_angle_tolerance` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
+| Parámetros | `map_dir` · `use_map_icp` true · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
 
 ### `diff_control_node` (control)
 
