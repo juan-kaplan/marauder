@@ -8,14 +8,14 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 # Localizer and Teach. Start the simulation (or the robot) first:
-#   ros2 launch rota_common sim_launch.py
-#   ros2 launch rota_control teach_launch.py mode:=mixed map_dir:=data/map rviz:=true
+#   ros2 launch rota_bringup sim_launch.py
+#   ros2 launch rota_bringup teach_launch.py mode:=mixed map_dir:=data/map rviz:=true
 
 
 def generate_launch_description():
     mode, tau_d, tau_theta = (LaunchConfiguration(n) for n in ('mode', 'tau_d', 'tau_theta'))
     use_sim_time = LaunchConfiguration('use_sim_time')
-    rviz_config = os.path.join(get_package_share_directory('rota_control'), 'config', 'teach.rviz')
+    rviz_config = os.path.join(get_package_share_directory('rota_bringup'), 'config', 'teach.rviz')
     return LaunchDescription([
         SetEnvironmentVariable('OMP_NUM_THREADS', '1'),
         DeclareLaunchArgument('mode', default_value='encoders'),

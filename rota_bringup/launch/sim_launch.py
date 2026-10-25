@@ -12,7 +12,7 @@ from launch_ros.actions import Node
 # TurtleBot3 in Gazebo with its own odom -> base_footprint TF turned off, so
 # localization_node is the only parent of base_footprint. Gazebo's /odom topic
 # stays on, and works as the ground truth.
-#   ros2 launch rota_common sim_launch.py
+#   ros2 launch rota_bringup sim_launch.py
 
 
 def patched_model():

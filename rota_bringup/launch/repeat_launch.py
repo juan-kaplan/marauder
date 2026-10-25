@@ -8,8 +8,8 @@ from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 
 # Localizer, Repeat and the controller. Start the simulation (or the robot) first:
-#   ros2 launch rota_common sim_launch.py
-#   ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
+#   ros2 launch rota_bringup sim_launch.py
+#   ros2 launch rota_bringup repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
 # The Repeat starts paused; start it with
 #   ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"
 # The controller follows /repeat/setpoint, which is in the robot frame, so the
@@ -19,7 +19,7 @@ from launch_ros.actions import Node
 def generate_launch_description():
     mode = LaunchConfiguration('mode')
     use_sim_time = LaunchConfiguration('use_sim_time')
-    rviz_config = os.path.join(get_package_share_directory('rota_control'), 'config', 'repeat.rviz')
+    rviz_config = os.path.join(get_package_share_directory('rota_bringup'), 'config', 'repeat.rviz')
     return LaunchDescription([
         SetEnvironmentVariable('OMP_NUM_THREADS', '1'),
         DeclareLaunchArgument('mode', default_value='encoders'),
