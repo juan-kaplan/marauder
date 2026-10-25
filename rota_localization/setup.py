@@ -15,11 +15,13 @@ setup(
     zip_safe=True,
     maintainer='zoe',
     maintainer_email='zvelazquezzorzi@udesa.edu.ar',
-    description='Layer 1 of Teach and Repeat: local localization from encoders, LiDAR or both.',
+    description='Local localization from encoders, LiDAR or both (layer 1 of Teach and Repeat), plus wheel and LiDAR odometry.',
     license='Apache-2.0',
     entry_points={
         'console_scripts': [
             'localization_node = rota_localization.localization_node:main',
+            'wheel_odometry_node = rota_localization.wheel_odometry_node:main',
+            'lidar_odometry_node = rota_localization.lidar_odometry_node:main',
         ],
     },
 )

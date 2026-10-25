@@ -3,7 +3,7 @@
 <package format="3">
   <name>rota_localization</name>
   <version>0.0.0</version>
-  <description>Layer 1 of Teach and Repeat: local localization from encoders, LiDAR or both.</description>
+  <description>Local localization from encoders, LiDAR or both (layer 1 of Teach and Repeat), plus wheel and LiDAR odometry.</description>
   <maintainer email="zvelazquezzorzi@udesa.edu.ar">zoe</maintainer>
   <license>Apache-2.0</license>
 
