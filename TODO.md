@@ -19,14 +19,15 @@ The architecture, interface contract and work split live in
 
 ## TurtleBot 4
 
-- [ ] Turn off the Create 3's own `odom → base_link` TF (see the README)
-- [ ] Robot profile (`robot:=tb3_sim|tb4`, in `rota_bringup/config/<robot>.yaml`): topics, frames, wheel geometry, `cmd_vel_type`, `use_sim_time:=false`
-  - [ ] Wheel geometry (TB3 burger ≈ r 0.033 / sep 0.160; TB4 ≈ r 0.036 / sep 0.233; verify)
-- [ ] Verify against the TB4 bags:
-  - [ ] Topic names / namespace
-  - [ ] QoS of `/odom` and `/scan`
-  - [ ] `/cmd_vel` type (`Twist` vs `TwistStamped`)
-  - [ ] `/tf_static` (LiDAR pose, `base_link` vs `base_footprint`)
+- [x] Check the TB4 bags: `/tb4_1` namespace, `scan` reliable, ticks and `odom` best effort, `cmd_vel` is `Twist`, LiDAR under `base_link` (x -0.04, yaw +90°), `base_footprint` not linked to it
+- [x] Robot profiles `robot:=tb3_sim|tb4` (`rota_bringup/config/<robot>.yaml`) and `ns:=` in the launches
+- [x] Private TF: our nodes publish on `/tf`, `tb4_launch.py` adds the LiDAR mount on `/tf_static`, so the Create 3's TF stays out of our tree
+- [x] Tick input (`wheel_source: ticks`) in `localization_node` and `wheel_odometry_node`
+- [x] Wheel geometry measured against the Create 3 `/odom`: 4.37e-4 m per tick, separation 0.2306 m (effective r about 0.0352, about 506 ticks per revolution)
+- [ ] Install `ros-humble-irobot-create-msgs` on the laptop and run the ticks on the robot
+- [ ] Verify on the robot: namespace, units of `wheel_vels` (one wheel turn by hand), the Create 3 `cmd_vel` QoS and timeout, laptop and robot clock offset, undock
+- [ ] Record a bag of our own with a measured straight line and a measured turn, to check `meters_per_tick` and `wheel_separation` (the course bags have no ground truth)
+- [ ] First Teach and Repeat on the TB4 in `mixed` mode
 
 ## Environment
 

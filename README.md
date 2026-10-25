@@ -181,61 +181,46 @@ ros2 launch rota_bringup diff_control_launch.py
 
 ## Deploying on Physical TurtleBot 4
 
-When transitioning from Gazebo simulation to a physical **TurtleBot 4** (iRobot Create 3 base + RPLIDAR):
+For a physical **TurtleBot 4** (iRobot Create 3 base + RPLIDAR) every launch takes `robot:=tb4 ns:=/tb4_1`. The profile `rota_bringup/config/tb4.yaml` sets the frame, the wheel geometry, `use_sim_time: false`, the scan range and `cmd_vel_type: twist`; `ns` is the robot's namespace (`tb4_1` on the course bags, check it with `ros2 topic list`). The default is `robot:=tb3_sim`, the simulation. The numbers come from the course bags recorded on the TB4, compared with the Create 3's own `/odom`.
 
-### Key Differences & What Changed
+### What is different from the simulation
 
-1. **Simulation Time (`use_sim_time:=false`)**:
-   * On physical hardware there is no `/clock` topic. **You must set `use_sim_time:=false`**; otherwise, ROS timers will freeze.
-2. **LiDAR QoS Profile**:
-   * The physical RPLIDAR driver publishes `sensor_msgs/msg/LaserScan` with `BEST_EFFORT` reliability (`qos_profile_sensor_data`). Both `teach_node` and `repeat_node` now use `qos_profile_sensor_data`, ensuring seamless compatibility with both physical hardware and simulation.
-3. **Base Odometry TF**:
-   * `localization_node` publishes `odom -> reference -> robot_frame`. The Create 3's own `odom -> base_link` TF must be turned off so that `localization_node` is the only parent of the robot frame. How to do this on the robot is still to be verified.
-4. **Velocity Commands (`/cmd_vel`)**:
-   * `diff_control_node` takes `cmd_vel_type:=auto|twist|twist_stamped` (default `auto`). In `auto` they look at what is subscribed to `/cmd_vel` (the robot base or the simulator bridge) and send that type; until something subscribes, nothing is sent.
-   * Typically: Humble Gazebo Classic and the Create 3 base expect `Twist`; the Jazzy Gazebo (gz) bridge expects `TwistStamped`. Check with `ros2 topic info /cmd_vel -v` and force a type if `auto` picks the wrong one.
-   * For keyboard teleoperation during the Teach phase, match the same type (`-p stamped:=true` for `TwistStamped`):
-     ```bash
-     ros2 run teleop_twist_keyboard teleop_twist_keyboard
-     ```
-     *(Or simply drive using the TurtleBot 4 Bluetooth joy controller).*
-5. **DDS Network Discovery**:
-   * Ensure your workstation and TurtleBot 4 share the same `ROS_DOMAIN_ID`:
-     ```bash
-     export ROS_DOMAIN_ID=0  # or your lab's assigned domain ID
-     ros2 topic list         # verify /scan and /odom are received
-     ```
-6. **Undock Before Driving**:
-   * If the robot is on the home dock, undock before running navigation:
-     ```bash
-     ros2 action send_goal /undock irobot_create_msgs/action/Undock {}
-     ```
+1. **Ticks, not `/joint_states`.** The TB4 publishes no `/joint_states`. With `wheel_source: ticks` the wheel readers (`localization_node`, `wheel_odometry_node`) read `<ns>/wheel_ticks` (`irobot_create_msgs/msg/WheelTicks`) and use `meters_per_tick` (4.37e-4, about 1.5% between bags) and `wheel_separation` (0.2306 m). This needs the message package on the laptop:
+   ```bash
+   sudo apt install ros-humble-irobot-create-msgs
+   ```
+2. **Private TF.** The Create 3 publishes `odom -> base_link` and `odom -> base_footprint` on `<ns>/tf`. Our nodes publish on `/tf` and never read the robot's TF, so the two trees do not meet and nothing has to be turned off on the robot. The LiDAR mount is not in our TF, so `tb4_launch.py` publishes it on `/tf_static` (`base_link -> rplidar_link`: x -0.04, z 0.1929, yaw +90 degrees, from the robot's own `tf_static`). `robot_frame` is `base_link`: `base_footprint` has no connection to the LiDAR in the robot's tree.
+3. **Scan.** 720 beams at about 8 Hz, range 0.15 to 12 m. The TB3 limit of 3.5 m kept only 30 to 45% of the beams in the lab, so the profile uses `max_scan_range: 8.0` (replayed on the bags, the lidar-only drift fell from 2.2 m to 0.5 m on a 24 m lap, 12 m was no better). The RPLIDAR publishes `scan` reliable; our subscribers use best effort, which connects to both.
+4. **Time.** There is no `/clock`: the profile sets `use_sim_time: false`. Keep the laptop and the robot clocks in sync (chrony or NTP): the Repeat stops if the newest TF is more than 0.5 s older than the laptop clock, and our TF carries the robot's stamps.
+5. **Velocity commands.** The Create 3 takes `geometry_msgs/Twist` on `<ns>/cmd_vel`. `diff_control_node` is started with `cmd_vel_type: twist` by the profile (`auto` and `twist_stamped` still exist; on a simulator bridge that expects `TwistStamped` use them). For teleoperation during the Teach use `teleop_twist_keyboard` (remap `cmd_vel` to `<ns>/cmd_vel`) or the Bluetooth controller.
+6. **DDS.** The laptop and the robot need the same `ROS_DOMAIN_ID`; `ros2 topic list` must show `<ns>/scan` and `<ns>/wheel_ticks`.
+7. **Undock before driving:**
+   ```bash
+   ros2 action send_goal <ns>/undock irobot_create_msgs/action/Undock {}
+   ```
 
 ### Commands for TurtleBot 4
 
-**1. Teach Phase on TurtleBot 4:**
+**1. Teach:**
 ```bash
-source /opt/ros/<distro>/setup.bash
+source /opt/ros/humble/setup.bash
 source src/marauder/.venv/bin/activate
 source install/setup.bash
 
-# Launch Teach node (with use_sim_time:=false)
-ros2 launch rota_bringup teach_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
+ros2 launch rota_bringup tb4_launch.py       # once, in its own terminal: the LiDAR mount
+ros2 launch rota_bringup teach_launch.py robot:=tb4 ns:=/tb4_1 mode:=<encoders|lidar|mixed> map_dir:=data/map rviz:=true
 ```
-Drive the robot manually along the path. Press `Ctrl+C` when done.
+Drive the robot manually along the path and end in free space. Press `Ctrl+C` when done.
 
-**2. Repeat Phase on TurtleBot 4:**
+**2. Repeat:**
 ```bash
-source /opt/ros/<distro>/setup.bash
-source src/marauder/.venv/bin/activate
-source install/setup.bash
-
-# Launch Repeat node (with use_sim_time:=false)
-ros2 launch rota_bringup repeat_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
+ros2 launch rota_bringup repeat_launch.py robot:=tb4 ns:=/tb4_1 mode:=<encoders|lidar|mixed> map_dir:=data/map rviz:=true
 
 # From another terminal (same environment), start the Repeat; data: false pauses it
 ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"
 ```
+
+`wheel_odometry_launch.py`, `lidar_odometry_launch.py` and `mapper_launch.py` take the same `robot:=` and `ns:=`. Use `mixed` on the TB4: on the bags the LiDAR alone drifted much more than the ticks, and lost track across a multi-second scan gap.
 
 ## License
 
