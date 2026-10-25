@@ -110,19 +110,20 @@ fijos, cada persona puede trabajar por su lado sin pisarse.
 
 ```text
 marauder/
-├── rota_common/            librería compartida, sin nodos
-│   ├── transformations.py  (ya existe)
-│   ├── cmd_vel.py          (ya existe)
-│   ├── se2.py  msgs.py  scan.py  icp.py  tnr_map.py
-│   └── launch/   sim_launch.py
-├── rota_localization/      NUEVO · capa 1
-│   └── localization_node.py
+├── rota_common/            librería compartida, sin nodos ni launches
+│   ├── cmd_vel.py
+│   └── se2.py  msgs.py  scan.py  icp.py  tnr_map.py
+├── rota_localization/      capa 1 y odometrías
+│   ├── localization_node.py
+│   └── wheel_odometry_node.py  lidar_odometry_node.py
+├── rota_mapping/           mapa de ocupación
+│   └── mapper_node.py
 ├── rota_control/           capa 2 + control
-│   ├── teach_node.py  repeat_node.py  diff_control_node.py
-│   ├── launch/   teach_launch.py  repeat_launch.py
-│   ├── config/   tb3_sim.yaml  tb4.yaml  tnr_bridge.yaml  teach.rviz  repeat.rviz
-│   └── scripts/  plot_teach_vs_repeat.py
-├── rota_icp/  rota_robmob/ TPs de clase anteriores: no se tocan
+│   └── teach_node.py  repeat_node.py  diff_control_node.py
+└── rota_bringup/           launches, simulación y perfiles de robot
+    ├── launch/   sim  teach  repeat  diff_control  wheel_odometry  lidar_odometry  mapper
+    ├── config/   teach.rviz  repeat.rviz  tb3_sim.yaml  tb4.yaml
+    └── scripts/  plot_teach_vs_repeat.py
 ```
 
 ### `rota_common` (librería)
@@ -202,9 +203,9 @@ graficar.
 
 ### Launches y simulación
 
-- `rota_common/launch/sim_launch.py`: solo la simulación (mundo de Gazebo,
+- `rota_bringup/launch/sim_launch.py`: solo la simulación (mundo de Gazebo,
   TB3 con `publish_odom_tf` en false). Se corre aparte de Teach y Repeat:
-  `ros2 launch rota_common sim_launch.py`.
+  `ros2 launch rota_bringup sim_launch.py`.
 - `teach_launch.py mode:=… map_dir:=… rviz:=true` lanza `localization_node`,
   `teach_node` y RViz.
 - `repeat_launch.py mode:=… map_dir:=… rviz:=true` lanza
@@ -350,10 +351,8 @@ Archivos: `rota_common/{se2,msgs,scan,icp}.py` · `rota_localization/`
 - `teach_node`: buffer de scans, avisos de referencia, aristas por ICP,
   guardado y visualización.
 - `repeat_node`: ICP contra el keyframe, Δodom, avance, TF y setpoint.
-- Tests de la lógica pura: avance de keyframe y encadenamiento.
 
-Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py` ·
-`rota_control/test/`
+Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py`
 
 ### Persona C: control e infraestructura
 
@@ -366,8 +365,8 @@ Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py` ·
 - Ground truth, script de gráficos y README. TB4: tópicos, QoS y TF del
   Create 3.
 
-Archivos: `rota_control/diff_control_node.py` · `rota_control/launch/` ·
-`rota_control/config/` · `rota_control/scripts/` · `README.md`
+Archivos: `rota_control/diff_control_node.py` · `rota_bringup/` ·
+`rota_mapping/` · `README.md`
 
 ### Cómo se desbloquean entre sí
 
@@ -387,7 +386,6 @@ Archivos: `rota_control/diff_control_node.py` · `rota_control/launch/` ·
   de mapa activo en los tres?
 - **Profesor:** `/rel_odom` lo publica `localization_node`, lanzado dentro de
   `teach_launch.py`. ¿Cuenta como "el nodo de aprendizaje"?
-- **Equipo:** ¿renombrar `rota_control` a `rota_tnr`? Es solo prolijidad; por
-  defecto se mantiene.
+- **Cerrado:** `rota_control` no se renombra a `rota_tnr`.
 - **Equipo:** de qué tópico de gz sale el ground truth (pose del modelo) y cómo
   se graba en cada corrida.

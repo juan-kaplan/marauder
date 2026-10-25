@@ -2,9 +2,9 @@
 
 *Leaves a trail, walks it back.*
 
-ROS 2 packages (Humble and Jazzy) built for a mobile robotics course, covering wheel
-odometry, LiDAR occupancy-grid mapping, ICP scan-matching odometry, and
-Teach-and-Repeat differential-drive autonomous navigation.
+ROS 2 packages (Humble and Jazzy) built for a mobile robotics course: a set of
+mobile-robot nodes (wheel and LiDAR odometry, local localization, occupancy-grid mapping,
+a differential-drive controller) and the Teach-and-Repeat navigation built on them.
 
 This repo lives inside a colcon workspace as `<workspace>/src/marauder`.
 It does not include the workspace's `build/`, `install/`, or `log/`
@@ -14,10 +14,11 @@ directories (colcon regenerates those) — see [Setup](#setup) below.
 
 | Package | Node(s) | What it does |
 |---|---|---|
-| [`rota_robmob`](rota_robmob) | `odometry`, `mapper` | Differential-drive wheel odometry (SE(2) pose from encoder/joint data, published as `nav_msgs/Odometry`) and LiDAR-based occupancy-grid mapping (`nav_msgs/OccupancyGrid`) from `sensor_msgs/LaserScan`. |
-| [`rota_icp`](rota_icp) | `lidar_odometry` | LiDAR odometry via point-to-point ICP (Open3D), aligning consecutive 2D scans to estimate relative motion. |
-| [`rota_common`](rota_common) | — | Shared helpers: pure-NumPy replacements for `tf_transformations`, and a `/cmd_vel` publisher that sends `Twist` or `TwistStamped` to match the robot/simulator. |
-| [`rota_control`](rota_control) | `diff_control_node`, `teach_node`, `repeat_node` | Teach-and-Repeat navigation system: records anchor keyframes during demonstration and autonomously repeats the trajectory by closing the loop on relative pose error via Open3D ICP scan matching and differential-drive kinematic control. |
+| [`rota_common`](rota_common) | none | Shared library: SE(2) poses, message conversions, scan projection, ICP, the Teach and Repeat map, and a `/cmd_vel` publisher that sends `Twist` or `TwistStamped` to match the robot/simulator. |
+| [`rota_localization`](rota_localization) | `localization_node`, `wheel_odometry_node`, `lidar_odometry_node` | `localization_node` is layer 1 of Teach and Repeat (`mode:=encoders\|lidar\|mixed`). The two odometry nodes are standalone: wheel odometry from `/joint_states` on `/wheel_odom`, and ICP odometry against a reference scan on `/lidar_odom`. They publish the `odom` TF only with `publish_tf:=true`. |
+| [`rota_mapping`](rota_mapping) | `mapper_node` | Occupancy grid on `/map` from `/scan` and the pose in `odom_topic` (default `/localization/odom`). |
+| [`rota_control`](rota_control) | `diff_control_node`, `teach_node`, `repeat_node` | Single-goal differential-drive controller, and Teach-and-Repeat: records anchor keyframes during a demonstration and replays them, closing the loop on the relative pose error with ICP against each keyframe's scan. |
+| [`rota_bringup`](rota_bringup) | none | Launch files (simulation, Teach, Repeat, controller, odometry, mapper), RViz configs and, later, robot profiles. |
 
 Course material and assignment briefs for each package live under
 [`docs/`](docs) (`docs/clase2`, `docs/clase3`, `docs/clase4`), including the
@@ -58,7 +59,7 @@ sudo apt install ros-<distro>-turtlebot3-gazebo ros-<distro>-turtlebot3-teleop
 ### Python dependencies (venv)
 
 Python packages that ROS doesn't provide (`open3d`, plus `matplotlib` for the
-example script) are listed in [`requirements.txt`](requirements.txt). Install
+plot scripts) are listed in [`requirements.txt`](requirements.txt). Install
 them in a venv at `src/marauder/.venv` that is built on the system Python and can
 see the ROS packages (`--system-site-packages`). `numpy` is pinned to `<2` to
 match what the ROS packages were built against.
@@ -107,14 +108,14 @@ source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Gazebo world and a TurtleBot3 Burger (gui:=false for no window)
-ros2 launch rota_common sim_launch.py
+ros2 launch rota_bringup sim_launch.py
 ```
 
 ### 2. Terminal 2: Teach (demonstrate and record)
 
 ```bash
 # Localization (mode: encoders, lidar or mixed) and the Teach recorder
-ros2 launch rota_control teach_launch.py mode:=mixed map_dir:=data/map rviz:=true
+ros2 launch rota_bringup teach_launch.py mode:=mixed map_dir:=data/map rviz:=true
 
 # Terminal 3: drive the robot along the path to teach
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
@@ -128,7 +129,7 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 Restart the simulation, so the robot is at the pose where the Teach started, and then:
 
 ```bash
-ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
+ros2 launch rota_bringup repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
 ```
 
 * The robot will:
@@ -147,10 +148,10 @@ ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: false}"  # pause
 
 ## RViz Visualizations & Topics
 
-Preconfigured RViz configuration files are provided in [`rota_control/config/`](rota_control/config):
+Preconfigured RViz configuration files are provided in [`rota_bringup/config/`](rota_bringup/config):
 
-* **[`teach.rviz`](rota_control/config/teach.rviz)**: Displays the keyframes (`/teach/keyframes`, arrows), LiDAR scan (`/scan`), and the accumulating route (`/teach/path`).
-* **[`repeat.rviz`](rota_control/config/repeat.rviz)**: Displays both paths simultaneously for real-time comparison:
+* **[`teach.rviz`](rota_bringup/config/teach.rviz)**: Displays the keyframes (`/teach/keyframes`, arrows), LiDAR scan (`/scan`), and the accumulating route (`/teach/path`).
+* **[`repeat.rviz`](rota_bringup/config/repeat.rviz)**: Displays both paths simultaneously for real-time comparison:
   * **Taught Reference Path**: `/repeat/taught_path` (Bright Green, width 0.04m)
   * **Actual Repeat Path**: `/repeat/actual_path` (Cyan / Blue, width 0.035m)
   * **Dynamic TF Frames**:
@@ -165,11 +166,15 @@ Preconfigured RViz configuration files are provided in [`rota_control/config/`](
 ## Additional Launch Files
 
 ```bash
-# Lidar Odometry via ICP
-ros2 launch rota_icp odometry_launch.py
+# Wheel odometry (/wheel_odom) and LiDAR odometry (/lidar_odom); publish_tf:=true also publishes odom -> robot
+ros2 launch rota_bringup wheel_odometry_launch.py
+ros2 launch rota_bringup lidar_odometry_launch.py
+
+# Occupancy grid (/map) from the pose in odom_topic
+ros2 launch rota_bringup mapper_launch.py odom_topic:=/wheel_odom
 
 # Standalone Single-Goal Differential-Drive Controller
-ros2 launch rota_control diff_control_launch.py
+ros2 launch rota_bringup diff_control_launch.py
 ```
 
 ---
@@ -215,7 +220,7 @@ source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Launch Teach node (with use_sim_time:=false)
-ros2 launch rota_control teach_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
+ros2 launch rota_bringup teach_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
 ```
 Drive the robot manually along the path. Press `Ctrl+C` when done.
 
@@ -226,7 +231,7 @@ source src/marauder/.venv/bin/activate
 source install/setup.bash
 
 # Launch Repeat node (with use_sim_time:=false)
-ros2 launch rota_control repeat_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
+ros2 launch rota_bringup repeat_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
 
 # From another terminal (same environment), start the Repeat; data: false pauses it
 ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"

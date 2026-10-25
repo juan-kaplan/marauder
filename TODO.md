@@ -15,11 +15,12 @@ The architecture, interface contract and work split live in
 - [x] LiDAR mount through TF, wheels selected by joint name
 - [x] Humble/Jazzy support: `rota_common` replaces `tf_transformations`, `cmd_vel_type:=auto`, venv + `requirements.txt`
 - [x] ROS dependencies declared in every `package.xml`
+- [x] Repo restructured by function: `rota_common`, `rota_localization` (with the wheel and LiDAR odometry nodes), `rota_mapping`, `rota_control`, `rota_bringup` (launches, RViz, simulation)
 
 ## TurtleBot 4
 
 - [ ] Turn off the Create 3's own `odom → base_link` TF (see the README)
-- [ ] Robot profile (`robot:=tb3_sim|tb4`): topics, frames, wheel geometry, `cmd_vel_type`, `use_sim_time:=false`
+- [ ] Robot profile (`robot:=tb3_sim|tb4`, in `rota_bringup/config/<robot>.yaml`): topics, frames, wheel geometry, `cmd_vel_type`, `use_sim_time:=false`
   - [ ] Wheel geometry (TB3 burger ≈ r 0.033 / sep 0.160; TB4 ≈ r 0.036 / sep 0.233; verify)
 - [ ] Verify against the TB4 bags:
   - [ ] Topic names / namespace
@@ -31,7 +32,7 @@ The architecture, interface contract and work split live in
 
 - [ ] Verify the build and a sim run on a Jazzy machine
 - [ ] Make sure the laptop, robot and any Docker setup run the **same** distro
-- [ ] Package metadata: maintainer, descriptions, duplicated per-package LICENSE
+- [ ] Package metadata: maintainer and description of `rota_control`
 
 ## Deliverables
 

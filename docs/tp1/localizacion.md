@@ -23,8 +23,8 @@ Con el workspace compilado (`python -m colcon build --symlink-install`) y el
 venv activo:
 
 ```bash
-ros2 launch rota_common sim_launch.py                   # la simulación
-ros2 launch rota_control teach_launch.py mode:=encoders   # o lidar, o mixed
+ros2 launch rota_bringup sim_launch.py                   # la simulación
+ros2 launch rota_bringup teach_launch.py mode:=encoders   # o lidar, o mixed
 ```
 
 `sim_launch.py` levanta `turtlebot3_world` en Gazebo, con el robot en
