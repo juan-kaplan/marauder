@@ -42,7 +42,7 @@ el mapa. Es la estructura de Sprunk et al. (2013), que está en
 
 ```mermaid
 flowchart TD
-    robot["Robot o Gazebo<br/>/joint_states · /scan"]
+    robot["Robot o Gazebo<br/>/joint_states o /wheel_ticks (TB4) · /scan"]
     loc["localization_node<br/>mode: encoders | lidar | mixed"]
     teach["teach_node<br/>keyframes + aristas por ICP"]
     repeat["repeat_node<br/>ICP contra keyframe k"]
@@ -83,8 +83,11 @@ flowchart LR
 ```
 
 Es el árbol que pide la consigna. Funciona porque son dos localizaciones
-distintas: ningún frame tiene dos padres. Para que eso valga hay que **apagar
-la TF `odom → base_*` que publican Gazebo y el Create 3**.
+distintas: ningún frame tiene dos padres. Para que eso valga, la TF `odom →
+base_*` del robot no puede llegar al mismo `/tf` que la nuestra. En simulación,
+`sim_launch.py` **apaga la TF de odometría de Gazebo**. En el TB4 no se apaga
+nada: el Create 3 publica en `/tb4_1/tf` y nuestros nodos en `/tf`, así que los
+dos árboles no se encuentran.
 
 | Transformación | Quién | Qué representa |
 |---|---|---|
@@ -99,7 +102,10 @@ Teach y en Repeat; el resto, solo en Repeat.
 
 En el TB3 el frame raíz del robot es `base_footprint`
 (`base_footprint → base_link → base_scan`), así que `robot_frame` vale
-`base_footprint` en simulación. En el TB4 hay que verificarlo en `/tf_static`.
+`base_footprint` en simulación. En el TB4 vale `base_link`: allá `base_footprint`
+solo cuelga de `odom` y no está conectado a `rplidar_link`. Lo fija el perfil
+del robot, y `tb4_launch.py` publica en nuestro `/tf_static` el montaje del
+LiDAR (`base_link → rplidar_link`).
 
 ## Contrato de interfaces
 
@@ -121,7 +127,7 @@ marauder/
 ├── rota_control/           capa 2 + control
 │   └── teach_node.py  repeat_node.py  diff_control_node.py
 └── rota_bringup/           launches, simulación y perfiles de robot
-    ├── launch/   sim  teach  repeat  diff_control  wheel_odometry  lidar_odometry  mapper
+    ├── launch/   sim  tb4  teach  repeat  diff_control  wheel_odometry  lidar_odometry  mapper
     ├── config/   teach.rviz  repeat.rviz  tb3_sim.yaml  tb4.yaml
     └── scripts/  plot_teach_vs_repeat.py
 ```
@@ -153,12 +159,12 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 
 | | |
 |---|---|
-| Suscribe | `/joint_states` (encoders, mixed) · `/scan` (lidar, mixed) |
+| Suscribe | `/joint_states` o `/wheel_ticks` (TB4), según `wheel_source` (encoders, mixed) · `/scan` (lidar, mixed) |
 | Publica | `/rel_odom` · `nav_msgs/Odometry`, frame `reference`, child `robot_frame` |
 | | `/localization/reference` · `PoseStamped` en `odom`, solo cuando se crea una referencia nueva. El stamp es el del mensaje del sensor que la creó. QoS reliable, depth 100. |
 | | `/localization/odom` · `Odometry` `odom → robot_frame`, para paths y gráficos |
 | TF | `odom → reference` · `reference → robot_frame` |
-| Parámetros | `mode` · `tau_d` 0.30 m · `tau_theta` 0.30 rad · `robot_frame` · `left_wheel_joint` / `right_wheel_joint` (por nombre) · `wheel_radius` · `wheel_separation` · `min/max_scan_range` · `icp_max_distance` · `icp_max_iterations` · `icp_min_fitness` |
+| Parámetros | `mode` · `tau_d` 0.30 m · `tau_theta` 0.30 rad · `robot_frame` · `wheel_source` (`joint_states` o `ticks`) · `left_wheel_joint` / `right_wheel_joint` (por nombre) · `wheel_radius` · `meters_per_tick` · `wheel_separation` · `min/max_scan_range` · `icp_max_distance` · `icp_max_iterations` · `icp_min_fitness` |
 
 ### `teach_node` (capa 2, Teach)
 
@@ -173,7 +179,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 
 | | |
 |---|---|
-| Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
+| Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (los scans esperan en una cola y `control()` toma los que ya tienen TF; descarta el que no la tiene a los 0.2 s). Frena si la última TF tiene más de 0.5 s |
 | Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
 | Servicios | `~/run` (`SetBool`): `true` arranca o reanuda, `false` pausa. Arranca pausado. En pausa sigue procesando scans y publica el setpoint identidad, así que el robot queda quieto. |
@@ -184,9 +190,9 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | | |
 |---|---|
 | Suscribe | `goal_topic` = `/repeat/setpoint`. Si el frame del objetivo es `robot_frame`, toma la pose del robot como (0, 0, 0). Se mantiene el modo `/goal_pose` en `odom` de la clase 4. |
-| Publica | `/cmd_vel` (`cmd_vel_type:=auto`, como ya está) |
+| Publica | `cmd_vel_topic` (`/cmd_vel` en simulación, `<ns>/cmd_vel` en el TB4) · `cmd_vel_type`: `auto` en el TB3, `twist` en el TB4 |
 | Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `goal_timeout` (0.5 s en `repeat_launch.py`, 0 = apagado) sin setpoint, frena. |
-| Parámetros para el Repeat | `goal_topic:=/repeat/setpoint` · `use_tf:=true` · `reference_frame` y `robot_frame` = `base_footprint` |
+| Parámetros para el Repeat | `goal_topic:=/repeat/setpoint` · `use_tf:=true` · `reference_frame` y `robot_frame` del perfil (`base_footprint` en el TB3, `base_link` en el TB4) |
 
 ### Mapa en disco (`data/map/`)
 
@@ -210,9 +216,14 @@ graficar.
   `teach_node` y RViz.
 - `repeat_launch.py mode:=… map_dir:=… rviz:=true` lanza
   `localization_node`, `repeat_node`, `diff_control_node` y RViz.
-- `robot:=tb3_sim|tb4` carga `config/<robot>.yaml`: frames, joints de las
-  ruedas, geometría, tópicos y `use_sim_time`. En el TB4, apagar
-  `publish_odom_tfs` del Create 3.
+- `robot:=tb3_sim|tb4` carga `config/<robot>.yaml` como parámetros de todos los
+  nodos del launch: `use_sim_time`, `robot_frame` y `reference_frame`,
+  `wheel_source`, la geometría (`wheel_radius` o `meters_per_tick`, y
+  `wheel_separation`), `max_scan_range` y `cmd_vel_type`. `ns:=/tb4_1` es el
+  namespace del robot: remapea `/scan` y `/wheel_ticks` dentro de él y manda el
+  control a `<ns>/cmd_vel`.
+- `tb4_launch.py` se corre una vez antes de Teach o Repeat en el TB4: publica el
+  montaje del LiDAR en `/tf_static`. No hay que apagar nada en el Create 3.
 
 ## Algoritmos
 
@@ -220,7 +231,7 @@ graficar.
 
 | Modo | Cómo actualiza `reference → robot` | Cuándo crea una referencia |
 |---|---|---|
-| `encoders` | Integra los deltas de las ruedas en cada `/joint_states`. | Cuando se supera `tau_d` o `tau_theta`. |
+| `encoders` | Integra los deltas de las ruedas en cada `/joint_states` o `/wheel_ticks`. | Cuando se supera `tau_d` o `tau_theta`. |
 | `lidar` | ICP del scan actual **contra el scan de la referencia**, no contra el scan anterior. Estimación inicial: la última `rel_odom` más la última velocidad (modelo de velocidad constante). | En un scan que supera el umbral; ese scan pasa a ser la referencia. |
 | `mixed` | Entre scans integra los encoders. Cuando llega un scan, corre ICP contra la referencia usando esa integración como estimación inicial. | En un scan que supera el umbral. Si el LiDAR se corta, no se crean referencias nuevas. |
 
@@ -341,7 +352,7 @@ que otro. Las dependencias entre personas se reducen a las firmas del contrato.
 - `se2`, `msgs`, `scan` e `icp`. Se entregan primero, el primer o
   segundo día.
 - `localization_node`: encoders, después lidar, después mixto.
-- TB4: joints de las ruedas por nombre, geometría y `/joint_states`.
+- TB4: ticks de las ruedas (`/wheel_ticks`) y geometría.
 
 Archivos: `rota_common/{se2,msgs,scan,icp}.py` · `rota_localization/`
 
@@ -362,8 +373,8 @@ Archivos: `rota_common/tnr_map.py` · `rota_control/{teach,repeat}_node.py`
   timeout.
 - Perfiles `tb3_sim`/`tb4`, `teach_launch`/`repeat_launch` y las
   configuraciones de RViz.
-- Ground truth, script de gráficos y README. TB4: tópicos, QoS y TF del
-  Create 3.
+- Ground truth, script de gráficos y README. TB4: tópicos (ticks, scan,
+  `cmd_vel`), QoS, TF privada y montaje del LiDAR.
 
 Archivos: `rota_control/diff_control_node.py` · `rota_bringup/` ·
 `rota_mapping/` · `README.md`
