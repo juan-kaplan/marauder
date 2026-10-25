@@ -42,10 +42,12 @@ class LocalizationNode(Node):
         self.declare_parameter('tau_d', 0.30)
         self.declare_parameter('tau_theta', 0.30)
         self.declare_parameter('robot_frame', 'base_footprint')
+        self.declare_parameter('wheel_source', 'joint_states')
         self.declare_parameter('left_wheel_joint', 'wheel_left_joint')
         self.declare_parameter('right_wheel_joint', 'wheel_right_joint')
         self.declare_parameter('wheel_radius', 0.033)
         self.declare_parameter('wheel_separation', 0.160)
+        self.declare_parameter('meters_per_tick', 4.37e-4)
         self.declare_parameter('min_scan_range', 0.12)
         self.declare_parameter('max_scan_range', 3.50)
         self.declare_parameter('icp_max_distance', 0.30)
@@ -58,10 +60,14 @@ class LocalizationNode(Node):
         self.tau_d = self.get_parameter('tau_d').value
         self.tau_theta = self.get_parameter('tau_theta').value
         self.robot_frame = self.get_parameter('robot_frame').value
+        self.wheel_source = self.get_parameter('wheel_source').value
+        if self.wheel_source not in ('joint_states', 'ticks'):
+            raise ValueError(f"wheel_source must be joint_states or ticks, got '{self.wheel_source}'")
         self.left_joint = self.get_parameter('left_wheel_joint').value
         self.right_joint = self.get_parameter('right_wheel_joint').value
         self.wheel_radius = self.get_parameter('wheel_radius').value
         self.wheel_separation = self.get_parameter('wheel_separation').value
+        self.meters_per_tick = self.get_parameter('meters_per_tick').value
         self.min_range = self.get_parameter('min_scan_range').value
         self.max_range = self.get_parameter('max_scan_range').value
         self.icp_max_distance = self.get_parameter('icp_max_distance').value
@@ -77,7 +83,7 @@ class LocalizationNode(Node):
         self.twist = (0.0, 0.0, 0.0)  # robot frame: vx, vy, omega
         self.ref_points = None        # reference scan, in robot_frame
         self.num_references = 0
-        self.last_joints = None       # (time, left, right)
+        self.last_wheels = None       # (time, left, right), travelled by each wheel in metres
 
         self.pub_rel = self.create_publisher(Odometry, '/rel_odom', 10)
         self.pub_odom = self.create_publisher(Odometry, '/localization/odom', 10)
@@ -85,8 +91,13 @@ class LocalizationNode(Node):
         self.tf_broadcaster = TransformBroadcaster(self)
 
         if self.mode in ('encoders', 'mixed'):
-            self.create_subscription(JointState, '/joint_states', self.on_joint_states,
-                                     qos_profile_sensor_data)
+            if self.wheel_source == 'ticks':
+                from irobot_create_msgs.msg import WheelTicks
+                self.create_subscription(WheelTicks, '/wheel_ticks', self.on_ticks,
+                                         qos_profile_sensor_data)
+            else:
+                self.create_subscription(JointState, '/joint_states', self.on_joint_states,
+                                         qos_profile_sensor_data)
         if self.mode in ('lidar', 'mixed'):
             self.tf_buffer = Buffer()
             self.tf_listener = TransformListener(self.tf_buffer, self)
@@ -99,16 +110,23 @@ class LocalizationNode(Node):
         except (ValueError, IndexError):
             self.get_logger().warn(f"Wheel joints not in {list(msg.name)}", throttle_duration_sec=5.0)
             return
-        t = seconds(msg.header.stamp)
-        last, self.last_joints = self.last_joints, (t, left, right)
+        self.on_wheels(msg.header.stamp, self.wheel_radius * left, self.wheel_radius * right)
+
+    def on_ticks(self, msg):
+        self.on_wheels(msg.header.stamp, self.meters_per_tick * msg.ticks_left,
+                       self.meters_per_tick * msg.ticks_right)
+
+    def on_wheels(self, stamp, left, right):
+        t = seconds(stamp)
+        last, self.last_wheels = self.last_wheels, (t, left, right)
         if last is None or t <= last[0]:
             if self.mode == 'encoders' and not self.started:
-                self.start(msg.header.stamp, None)
+                self.start(stamp, None)
                 self.publish()
             return
 
-        d_left = self.wheel_radius * (left - last[1])
-        d_right = self.wheel_radius * (right - last[2])
+        d_left = left - last[1]
+        d_right = right - last[2]
         d_lin = 0.5 * (d_left + d_right)
         d_ang = (d_right - d_left) / self.wheel_separation
         delta = (d_lin * math.cos(0.5 * d_ang), d_lin * math.sin(0.5 * d_ang), d_ang)
@@ -117,9 +135,9 @@ class LocalizationNode(Node):
         dt = t - last[0]
         self.rel = se2.compose(self.rel, delta)
         self.twist = (delta[0] / dt, delta[1] / dt, d_ang / dt)
-        self.stamp = msg.header.stamp
+        self.stamp = stamp
         if self.mode == 'encoders':
-            self.new_reference_if_needed(msg.header.stamp, None)
+            self.new_reference_if_needed(stamp, None)
         self.publish()
 
     def on_scan(self, msg):
@@ -129,7 +147,7 @@ class LocalizationNode(Node):
                                    throttle_duration_sec=2.0)
             return
         if not self.started:
-            if self.mode == 'mixed' and self.last_joints is None:
+            if self.mode == 'mixed' and self.last_wheels is None:
                 return  # wait for the wheels
             self.start(msg.header.stamp, points)
             self.publish()

@@ -1,0 +1,12 @@
+# TurtleBot 4 (Create 3 base, RPLIDAR), measured from the course bags (agents report T1).
+# base_footprint is not connected to the LiDAR in the robot's TF, so the robot frame is base_link.
+/**:
+  ros__parameters:
+    use_sim_time: false
+    robot_frame: base_link
+    reference_frame: base_link
+    wheel_source: ticks
+    meters_per_tick: 4.37e-4
+    wheel_separation: 0.2306
+    max_scan_range: 8.0
+    cmd_vel_type: twist

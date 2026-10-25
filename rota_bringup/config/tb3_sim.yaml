@@ -1,0 +1,11 @@
+# TurtleBot3 burger in Gazebo (sim_launch.py)
+/**:
+  ros__parameters:
+    use_sim_time: true
+    robot_frame: base_footprint
+    reference_frame: base_footprint
+    wheel_source: joint_states
+    wheel_radius: 0.033
+    wheel_separation: 0.160
+    max_scan_range: 3.5
+    cmd_vel_type: auto
