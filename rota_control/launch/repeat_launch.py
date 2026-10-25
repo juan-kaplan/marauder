@@ -10,6 +10,8 @@ from launch_ros.actions import Node
 # Localizer, Repeat and the controller. Start the simulation (or the robot) first:
 #   ros2 launch rota_common sim_launch.py
 #   ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
+# The Repeat starts paused; start it with
+#   ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"
 # The controller follows /repeat/setpoint, which is in the robot frame, so the
 # robot's own pose is the identity and the goal needs no transform.
 

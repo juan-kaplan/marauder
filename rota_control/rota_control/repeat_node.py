@@ -9,6 +9,9 @@ robot is near keyframe k+1 or past it. Publishes /repeat/setpoint (keyframe k+1 
 from the robot, the last keyframe itself at the end, the identity when the localizer's
 TF is lost) and TF robot_frame -> map_current_keyframe -> map_next_keyframe and
 robot_frame -> setpoint. The controller stops the robot at the last keyframe.
+
+Starts paused: ~/run (SetBool) starts, pauses or resumes it. While paused the node
+keeps tracking and publishes the identity setpoint, so the robot stays still.
 """
 
 import math
@@ -23,6 +26,7 @@ from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from rclpy.time import Time
 from sensor_msgs.msg import LaserScan
+from std_srvs.srv import SetBool
 from tf2_ros import TransformBroadcaster, TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -76,6 +80,8 @@ class RepeatNode(Node):
         self.get_logger().info(f"Loaded {len(keyframes)} keyframes from {self.map_dir} "
                                f"(mode {meta.get('mode', '?')})")
 
+        self.running = False      # paused until ~/run
+        self.moved = False        # true once it has been started
         self.k = 0                # the robot starts where the Teach started
         self.rel = se2.IDENTITY   # keyframe k -> robot, at the latest scan
         self.odom = None          # odom -> robot, at the latest scan
@@ -93,7 +99,19 @@ class RepeatNode(Node):
         self.pub_taught = self.create_publisher(Path, '/repeat/taught_path', 10)
         self.pub_actual = self.create_publisher(Path, '/repeat/actual_path', 10)
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
+        self.create_service(SetBool, '~/run', self.on_run)
         self.create_timer(1.0 / self.get_parameter('control_frequency').value, self.control)
+
+    def on_run(self, request, response):
+        if request.data and not self.running:
+            self.get_logger().info("Repeat resumed" if self.moved else "Repeat started")
+            self.moved = True
+        elif not request.data and self.running:
+            self.get_logger().info(f"Repeat paused at keyframe #{self.k} of {self.last}")
+        self.running = request.data
+        response.success = True
+        response.message = 'running' if self.running else 'paused'
+        return response
 
     def on_scan(self, msg):
         points = project(msg, self.tf_buffer, self.robot_frame, self.min_range, self.max_range)
@@ -188,6 +206,9 @@ class RepeatNode(Node):
             transform_stamped(stamp, 'map_current_keyframe', 'map_next_keyframe',
                               self.edges[self.k + 1] if self.k < self.last else se2.IDENTITY),
             transform_stamped(stamp, self.robot_frame, 'setpoint', setpoint)])
+        if not self.running:
+            self.get_logger().info("Paused, call ~/run to start", throttle_duration_sec=5.0)
+            setpoint = se2.IDENTITY
         self.pub_setpoint.publish(pose_stamped(stamp, self.robot_frame, setpoint))
         self.publish_paths(stamp, odom)
 

@@ -175,6 +175,7 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 | Suscribe | `/scan` · TF `odom → robot_frame`, consultada al stamp del scan (listener con thread propio, timeout 0.2 s) |
 | Publica | `/repeat/setpoint` (`PoseStamped` en `robot_frame`) · `/repeat/taught_path` (en `map_current_keyframe`) · `/repeat/actual_path` |
 | TF | `robot_frame → map_current_keyframe` · `map_current_keyframe → map_next_keyframe` · `robot_frame → setpoint` |
+| Servicios | `~/run` (`SetBool`): `true` arranca o reanuda, `false` pausa. Arranca pausado. En pausa sigue procesando scans y publica el setpoint identidad, así que el robot queda quieto. |
 | Parámetros | `map_dir` · `advance_dist` 0.20 m · `advance_angle` 0.15 rad · `control_frequency` 20 Hz · `icp_*` |
 
 ### `diff_control_node` (control)

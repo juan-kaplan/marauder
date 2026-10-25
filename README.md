@@ -136,6 +136,12 @@ ros2 launch rota_control repeat_launch.py mode:=mixed map_dir:=data/map rviz:=tr
   2. Track its pose in the active keyframe's frame: wheel/LiDAR odometry from the localizer, corrected by ICP against the keyframe's scan.
   3. Publish the next keyframe, seen from the robot, as `/repeat/setpoint`.
   4. Follow it with `diff_control_node` and advance keyframes until the last one is reached.
+* The Repeat starts **paused**: the robot stays still until you start it from another terminal. The same call pauses and resumes it (the node keeps tracking while paused):
+
+```bash
+ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"   # start / resume
+ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: false}"  # pause
+```
 
 ---
 
@@ -221,6 +227,9 @@ source install/setup.bash
 
 # Launch Repeat node (with use_sim_time:=false)
 ros2 launch rota_control repeat_launch.py mode:=<encoders|lidar|mixed> map_dir:=data/map use_sim_time:=false rviz:=true
+
+# From another terminal (same environment), start the Repeat; data: false pauses it
+ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"
 ```
 
 ## License
