@@ -98,20 +98,34 @@ with `#!/usr/bin/env python3`, so they run in the venv and find `open3d`.
 
 The Teach-and-Repeat pipeline operates entirely without a global metric SLAM map or global path planning (A*, Dijkstra). It represents the trajectory as a sequence of **anchor keyframes** $a_k = (l_k, x_k)$ and relative transformations $T_{(k, k+1)} = x_{k+1} \ominus x_k \in SE(2)$, closing the loop on relative pose error using live LiDAR scan matching (Open3D ICP).
 
-### 1. Terminal 1: start the simulation
+Each step gives the **TurtleBot 3 (simulation)** commands and then the **TurtleBot 4 (robot)** ones. Read [Deploying on Physical TurtleBot 4](#deploying-on-physical-turtlebot-4) first for what the robot needs (message package, namespace, clocks, undock).
 
-From the workspace root:
+### 1. Terminal 1: start the simulation (TB3) or the LiDAR mount (TB4)
+
+From the workspace root, in every terminal:
 
 ```bash
 source /opt/ros/<distro>/setup.bash
 source src/marauder/.venv/bin/activate
 source install/setup.bash
+```
 
+**TB3:**
+
+```bash
 # Gazebo world and a TurtleBot3 Burger (gui:=false for no window)
 ros2 launch rota_bringup sim_launch.py
 ```
 
+**TB4:** the robot is already running, so there is nothing to simulate. Undock it, check that `ros2 topic list` shows `/tb4_1/scan` and `/tb4_1/wheel_ticks`, and publish the LiDAR mount once:
+
+```bash
+ros2 launch rota_bringup tb4_launch.py
+```
+
 ### 2. Terminal 2: Teach (demonstrate and record)
+
+**TB3:**
 
 ```bash
 # Localization (mode: encoders, lidar or mixed) and the Teach recorder
@@ -121,15 +135,34 @@ ros2 launch rota_bringup teach_launch.py mode:=mixed map_dir:=data/map rviz:=tru
 ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ```
 
+**TB4:**
+
+```bash
+ros2 launch rota_bringup teach_launch.py robot:=tb4 ns:=/tb4_1 mode:=mixed map_dir:=data/map rviz:=true
+
+# Terminal 3: drive the robot along the path to teach
+ros2 run teleop_twist_keyboard teleop_twist_keyboard --ros-args -r cmd_vel:=/tb4_1/cmd_vel
+```
+
+Use `mixed` on the TB4 (see below). End the Teach in free space, at least 0.2 m from any obstacle.
+
 * **Keyframes** are created by the localizer whenever the robot moves $\ge 0.30\text{ m}$ or turns $\ge 0.30\text{ rad}$ (`tau_d`, `tau_theta`). Each one keeps its LiDAR scan and an ICP edge to the previous one.
 * **Save**: press `Ctrl+C` in Terminal 2 (or call `ros2 service call /teach_node/save std_srvs/srv/Trigger`). The map goes to `map_dir`: `map.json` and `scans.npz`.
 
 ### 3. Terminal 2: Repeat (autonomous replay)
 
-Restart the simulation, so the robot is at the pose where the Teach started, and then:
+The robot has to be at the pose where the Teach started. **TB3:** restart the simulation. **TB4:** drive or carry the robot back to the start, and keep `tb4_launch.py` running. Then:
+
+**TB3:**
 
 ```bash
 ros2 launch rota_bringup repeat_launch.py mode:=mixed map_dir:=data/map rviz:=true
+```
+
+**TB4:**
+
+```bash
+ros2 launch rota_bringup repeat_launch.py robot:=tb4 ns:=/tb4_1 mode:=mixed map_dir:=data/map rviz:=true
 ```
 
 * The robot will:
@@ -199,26 +232,9 @@ For a physical **TurtleBot 4** (iRobot Create 3 base + RPLIDAR) every launch tak
    ros2 action send_goal <ns>/undock irobot_create_msgs/action/Undock {}
    ```
 
-### Commands for TurtleBot 4
+### Running Teach and Repeat on the TurtleBot 4
 
-**1. Teach:**
-```bash
-source /opt/ros/humble/setup.bash
-source src/marauder/.venv/bin/activate
-source install/setup.bash
-
-ros2 launch rota_bringup tb4_launch.py       # once, in its own terminal: the LiDAR mount
-ros2 launch rota_bringup teach_launch.py robot:=tb4 ns:=/tb4_1 mode:=<encoders|lidar|mixed> map_dir:=data/map rviz:=true
-```
-Drive the robot manually along the path and end in free space. Press `Ctrl+C` when done.
-
-**2. Repeat:**
-```bash
-ros2 launch rota_bringup repeat_launch.py robot:=tb4 ns:=/tb4_1 mode:=<encoders|lidar|mixed> map_dir:=data/map rviz:=true
-
-# From another terminal (same environment), start the Repeat; data: false pauses it
-ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"
-```
+The commands are in [Teach and Repeat](#teach-and-repeat-tnr), steps 1 to 3 (the TB4 blocks). The Repeat starts paused there too, and the same `/repeat_node/run` call starts it.
 
 `wheel_odometry_launch.py`, `lidar_odometry_launch.py` and `mapper_launch.py` take the same `robot:=` and `ns:=`. Use `mixed` on the TB4: on the bags the LiDAR alone drifted much more than the ticks, and lost track across a multi-second scan gap.
 

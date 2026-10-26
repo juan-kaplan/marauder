@@ -5,8 +5,9 @@ una capa de Teach and Repeat que se relocaliza con ICP contra los keyframes
 enseñados. Incluye el contrato de interfaces, el plan de trabajo y el reparto
 entre tres personas.
 
-> Estado: **diseño**. Todavía no está implementado. El código actual de
-> `rota_control` sigue la estructura anterior; ver [`TODO.md`](../../TODO.md).
+> Estado: **implementado**. Este documento es el diseño de referencia: donde el
+> código y el documento difieran, vale el código. Cómo correrlo está en el
+> [`README.md`](../../README.md).
 
 ## Índice
 
@@ -128,8 +129,7 @@ marauder/
 │   └── teach_node.py  repeat_node.py  diff_control_node.py
 └── rota_bringup/           launches, simulación y perfiles de robot
     ├── launch/   sim  tb4  teach  repeat  diff_control  wheel_odometry  lidar_odometry  mapper
-    ├── config/   teach.rviz  repeat.rviz  tb3_sim.yaml  tb4.yaml
-    └── scripts/  plot_teach_vs_repeat.py
+    └── config/   teach.rviz  repeat.rviz  tb3_sim.yaml  tb4.yaml
 ```
 
 ### `rota_common` (librería)

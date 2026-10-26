@@ -37,6 +37,20 @@ ros2 launch rota_bringup teach_launch.py mode:=encoders   # o lidar, o mixed
 `ros2 topic pub /cmd_vel`. La odometría de Gazebo (`/odom`) queda como
 referencia de la pose real.
 
+Para correrlo en el TB4, con el robot ya encendido y el mismo `ROS_DOMAIN_ID`
+en la laptop (y `ros-humble-irobot-create-msgs` instalado):
+
+```bash
+ros2 launch rota_bringup tb4_launch.py                    # una vez: el montaje del LiDAR
+ros2 launch rota_bringup teach_launch.py robot:=tb4 ns:=/tb4_1 mode:=mixed
+```
+
+`robot:=tb4` carga el perfil (`base_link`, ticks, `use_sim_time: false`) y
+`ns:=/tb4_1` es el namespace del robot (se ve con `ros2 topic list`). Para
+mover el robot, `teleop_twist_keyboard` con `cmd_vel` remapeado a
+`/tb4_1/cmd_vel`. Los relojes de la laptop y del robot tienen que estar
+sincronizados.
+
 ## Modos
 
 - **encoders:** integra las ruedas en cada `/joint_states` o `/wheel_ticks`.
