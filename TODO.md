@@ -37,6 +37,6 @@ The architecture, interface contract and work split live in
 
 ## Deliverables
 
-- [ ] Plot of Teach vs Repeat trajectories for each localization mode
+- [x] Plot of Teach vs Repeat trajectories for each localization mode
 - [ ] 5-minute presentation: Teach path plot + Teach-vs-Repeat comparison per mode
 - [ ] Live demo on the TB4

@@ -129,6 +129,7 @@ marauder/
 │   └── teach_node.py  repeat_node.py  diff_control_node.py
 └── rota_bringup/           launches, simulación y perfiles de robot
     ├── launch/   sim  tb4  teach  repeat  diff_control  wheel_odometry  lidar_odometry  mapper
+    ├── scripts/  plot_teach_vs_repeat.py
     └── config/   teach.rviz  repeat.rviz  tb3_sim.yaml  tb4.yaml
 ```
 

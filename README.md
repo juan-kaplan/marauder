@@ -177,6 +177,28 @@ ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: true}"   # start
 ros2 service call /repeat_node/run std_srvs/srv/SetBool "{data: false}"  # pause
 ```
 
+### Plotting a run
+
+To compare a Repeat with its Teach, record the reference pose and the localizer's pose during each run, then plot the two bags with the Teach's map. The reference is the simulator's ground truth (`/odom`); the TB4 has none, so use the Create 3's `/tb4_1/odom` there (wheels, gyro and optical flow, not truth).
+
+**TB3:**
+
+```bash
+ros2 bag record -o teach_bag /odom /localization/odom      # during the Teach, then Ctrl+C
+ros2 bag record -o repeat_bag /odom /localization/odom     # during the Repeat, then Ctrl+C
+python3 src/marauder/rota_bringup/scripts/plot_teach_vs_repeat.py teach_bag repeat_bag data/map run.png
+```
+
+**TB4:**
+
+```bash
+ros2 bag record -o teach_bag /tb4_1/odom /localization/odom
+ros2 bag record -o repeat_bag /tb4_1/odom /localization/odom
+python3 src/marauder/rota_bringup/scripts/plot_teach_vs_repeat.py teach_bag repeat_bag data/map run.png --ref /tb4_1/odom
+```
+
+The script needs ROS sourced (it reads the bags) and `matplotlib`. It draws the taught path, the repeated path and the repeat as the localizer saw it, with the keyframes, next to the distance from the repeated path to the taught one over time, and prints the mean, the maximum and the end error. Both runs have to start from the same pose (restart the simulation between them).
+
 ---
 
 ## RViz Visualizations & Topics
