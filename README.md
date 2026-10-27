@@ -185,7 +185,7 @@ To compare a Repeat with its Teach, record the reference pose and the localizer'
 
 ```bash
 ros2 bag record -o teach_bag /odom /localization/odom      # during the Teach, then Ctrl+C
-ros2 bag record -o repeat_bag /odom /localization/odom     # during the Repeat, then Ctrl+C
+ros2 bag record -o repeat_bag /odom /localization/odom /repeat/setpoint /scan /tf_static   # during the Repeat, then Ctrl+C
 python3 src/marauder/rota_bringup/scripts/plot_teach_vs_repeat.py teach_bag repeat_bag data/map run.png
 ```
 
@@ -193,11 +193,21 @@ python3 src/marauder/rota_bringup/scripts/plot_teach_vs_repeat.py teach_bag repe
 
 ```bash
 ros2 bag record -o teach_bag /tb4_1/odom /localization/odom
-ros2 bag record -o repeat_bag /tb4_1/odom /localization/odom
+ros2 bag record -o repeat_bag /tb4_1/odom /localization/odom /repeat/setpoint /tb4_1/scan /tb4_1/tf_static /tb4_1/cmd_vel
 python3 src/marauder/rota_bringup/scripts/plot_teach_vs_repeat.py teach_bag repeat_bag data/map run.png --ref /tb4_1/odom
 ```
 
 The script needs ROS sourced (it reads the bags) and `matplotlib`. It draws the taught path, the repeated path and the repeat as the localizer saw it, with the keyframes, next to the distance from the repeated path to the taught one over time, and prints the mean, the maximum and the end error. Both runs have to start from the same pose (restart the simulation between them).
+
+To animate a run (the robot as an arrow, its scan, and in a Repeat the target keyframe with its stored scan), record the scan and `/tf_static` as above (the TB4 bags need `--ns /tb4_1` and `--ref /odom`; a `/tb4_1/tf_static` without the LiDAR mount needs `--mount x y yaw`), then:
+
+```bash
+python3 src/marauder/rota_bringup/scripts/animate_run.py run repeat_bag repeat.gif --map data/map                  # TB3
+python3 src/marauder/rota_bringup/scripts/animate_run.py run repeat_bag repeat.mp4 --map data/map --ns /tb4_1     # TB4, MP4
+python3 src/marauder/rota_bringup/scripts/animate_run.py map data/map map.png                                      # the map the Teach built
+```
+
+`run` also works on a Teach bag (leave out `--map`, or pass it to see the taught keyframes). Older scans stay faint so the walls build up; smeared walls mean the reference odom drifted.
 
 ---
 
