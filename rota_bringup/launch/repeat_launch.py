@@ -16,6 +16,7 @@ from launch_ros.actions import Node
 #   ros2 launch rota_bringup repeat_launch.py robot:=tb4 ns:=/tb4_1 mode:=mixed map_dir:=data/map
 # The controller follows /repeat/setpoint, which is in the robot frame, so the
 # robot's own pose is the identity and the goal needs no transform.
+# The controller gains and tolerances and the Repeat's advance_dist come from the profile.
 
 
 def generate_launch_description():
@@ -40,10 +41,7 @@ def generate_launch_description():
              parameters=[profile, {'goal_topic': '/repeat/setpoint',
                                    'cmd_vel_topic': [ns, '/cmd_vel'],
                                    'use_tf': True,
-                                   'goal_timeout': 0.5,
-                                   'k_rho': 3.0, 'k_alpha': 8.0, 'k_beta': -1.5,
-                                   'max_linear_speed': 0.3, 'max_angular_speed': 1.0,
-                                   'dist_tolerance': 0.05, 'angle_tolerance': 0.05}]),
+                                   'goal_timeout': 0.5}]),
         Node(package='rviz2', executable='rviz2', arguments=['-d', rviz_config],
              parameters=[profile], remappings=remaps[:1],
              condition=IfCondition(LaunchConfiguration('rviz'))),

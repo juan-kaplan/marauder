@@ -192,7 +192,8 @@ tnr_map.py  Keyframe(id, stamp, pose_odom, edge_from_prev, edge_fitness, edge_ic
 |---|---|
 | Suscribe | `goal_topic` = `/repeat/setpoint`. Si el frame del objetivo es `robot_frame`, toma la pose del robot como (0, 0, 0). Se mantiene el modo `/goal_pose` en `odom` de la clase 4. |
 | Publica | `cmd_vel_topic` (`/cmd_vel` en simulación, `<ns>/cmd_vel` en el TB4) · `cmd_vel_type`: `auto` en el TB3, `twist` en el TB4 |
-| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `goal_timeout` (0.5 s en `repeat_launch.py`, 0 = apagado) sin setpoint, frena. |
+| Frenado | Con un setpoint identidad, el objetivo está alcanzado y publica velocidad cero. Si pasa `goal_timeout` (0.5 s en `repeat_launch.py`, 0 = apagado) sin setpoint, frena. Una vez alcanzado, sigue publicando cero mientras el error quede dentro del doble de las tolerancias (`dist_tolerance` y `angle_tolerance`), y recién vuelve a moverse cuando sale de esa banda. |
+| Ganancias | `k_rho`, `k_alpha`, `k_beta`, `k_angle`, tolerancias y velocidades máximas salen del perfil del robot (`config/<robot>.yaml`), igual que `advance_dist` del Repeat. El TB3 usa los valores de siempre y el TB4 unos más suaves. |
 | Parámetros para el Repeat | `goal_topic:=/repeat/setpoint` · `use_tf:=true` · `reference_frame` y `robot_frame` del perfil (`base_footprint` en el TB3, `base_link` en el TB4) |
 
 ### Mapa en disco (`data/map/`)

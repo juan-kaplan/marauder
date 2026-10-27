@@ -9,3 +9,12 @@
     wheel_separation: 0.160
     max_scan_range: 3.5
     cmd_vel_type: auto
+    k_rho: 3.0
+    k_alpha: 8.0
+    k_beta: -1.5
+    k_angle: 2.0
+    max_linear_speed: 0.3
+    max_angular_speed: 1.0
+    dist_tolerance: 0.05
+    angle_tolerance: 0.05
+    advance_dist: 0.20

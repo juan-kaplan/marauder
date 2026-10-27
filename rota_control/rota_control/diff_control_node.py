@@ -5,11 +5,10 @@ import math
 import numpy as np
 
 import rclpy
-from geometry_msgs.msg import PoseStamped, Twist
+from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Odometry
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.time import Time
 from tf2_ros import TransformException
 from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
@@ -93,6 +92,8 @@ class DiffControlNode(Node):
         self.goal_pose = None
         self.goal_active = False
         self.goal_time = None
+        # After reaching a goal, hold still until the error leaves twice the tolerances
+        self.holding = False
 
         # TF setup
         self.tf_buffer = Buffer()
@@ -197,14 +198,20 @@ class DiffControlNode(Node):
         dy = y_g - y
         rho = math.hypot(dx, dy)
 
-        twist = Twist()
+        heading_error = normalize_angle(theta_g - theta)
+
+        if self.holding:
+            if rho <= 2.0 * self.dist_tolerance and abs(heading_error) <= 2.0 * self.angle_tolerance:
+                self.publish_zero_velocity()
+                return
+            self.holding = False
 
         # Check position tolerance
         if rho <= self.dist_tolerance:
-            heading_error = normalize_angle(theta_g - theta)
             if abs(heading_error) <= self.angle_tolerance:
                 # Goal position and orientation achieved
                 self.goal_active = False
+                self.holding = True
                 self.publish_zero_velocity()
                 self.get_logger().info(f"Goal pose reached successfully! (x={x:.3f}, y={y:.3f}, theta={theta:.3f})",
                                        throttle_duration_sec=1.0)

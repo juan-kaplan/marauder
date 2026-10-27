@@ -238,6 +238,8 @@ ros2 launch rota_bringup diff_control_launch.py
 
 For a physical **TurtleBot 4** (iRobot Create 3 base + RPLIDAR) every launch takes `robot:=tb4 ns:=/tb4_1`. The profile `rota_bringup/config/tb4.yaml` sets the frame, the wheel geometry, `use_sim_time: false`, the scan range and `cmd_vel_type: twist`; `ns` is the robot's namespace (`tb4_1` on the course bags, check it with `ros2 topic list`). The default is `robot:=tb3_sim`, the simulation. The numbers come from the course bags recorded on the TB4, compared with the Create 3's own `/odom`.
 
+The profile also holds the controller tuning (`k_rho`, `k_alpha`, `k_beta`, `k_angle`, `dist_tolerance`, `angle_tolerance`, `max_linear_speed`, `max_angular_speed`) and the Repeat's `advance_dist`. The TB4 values are softer than the simulation's (`k_alpha` 3 instead of 8, `max_angular_speed` 0.6 instead of 1.0, `advance_dist` 0.30 m instead of 0.20 m) because ICP noise and the Wi-Fi delay make the sharp ones wobble. They are a first guess: to try others, edit `rota_bringup/config/tb4.yaml`, rebuild (`python -m colcon build --symlink-install`) and relaunch the Repeat. Once the controller reaches the goal it keeps publishing zero until the error leaves twice the tolerances, so the robot holds still at the end instead of chasing the noise.
+
 ### What is different from the simulation
 
 1. **Ticks, not `/joint_states`.** The TB4 publishes no `/joint_states`. With `wheel_source: ticks` the wheel readers (`localization_node`, `wheel_odometry_node`) read `<ns>/wheel_ticks` (`irobot_create_msgs/msg/WheelTicks`) and use `meters_per_tick` (4.37e-4, about 1.5% between bags) and `wheel_separation` (0.2306 m). This needs the message package on the laptop:

@@ -10,3 +10,13 @@
     wheel_separation: 0.2306
     max_scan_range: 8.0
     cmd_vel_type: twist
+    # Controller and Repeat tuning: softer than the simulation (ICP noise, Wi-Fi delay)
+    k_rho: 1.0
+    k_alpha: 3.0
+    k_beta: -1.0
+    k_angle: 1.0
+    max_linear_speed: 0.25
+    max_angular_speed: 0.6
+    dist_tolerance: 0.05
+    angle_tolerance: 0.10
+    advance_dist: 0.30
