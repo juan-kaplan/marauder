@@ -3,14 +3,15 @@
 Animate a run from its bag, or draw the map a Teach built.
 
   python3 animate_run.py run bag out.gif [--map map_dir] [--ref /odom] [--scan /scan]
-                         [--setpoint /repeat/setpoint] [--ns /tb4_1]
+                         [--setpoint /repeat/setpoint] [--ns /tb4_1] [--still out.png] [--es]
   python3 animate_run.py map map_dir out.png
 
 run: top-down, in the frame of the first reference pose. The robot is an arrow
 moving along the reference odom, with its LiDAR scan around it (older scans stay
 faint, so the walls build up). With --map the taught path and keyframes are drawn
 in grey; with a /repeat/setpoint in the bag, the target is a dot and the stored
-scan of that keyframe is drawn on it. out.gif or out.mp4 picks the writer.
+scan of that keyframe is drawn on it. --still also saves the last frame (with every
+scan accumulated) as a PNG; --es labels in Spanish. out.gif or out.mp4 picks the writer.
 The bag needs the reference odom, the scan and /tf_static (the LiDAR mount);
 without a mount in the bag pass --mount x y yaw. Run it with ROS sourced.
 """
@@ -141,7 +142,7 @@ def run_animation(a):
     trail, = ax.plot([], [], '-', color='tab:blue', lw=1.5)
     clock = ax.text(0.02, 0.97, '', transform=ax.transAxes, va='top')
     if sets:
-        ax.legend([live, stored, target], ['live scan', 'stored scan of the target', 'target'], loc='lower right', fontsize=8)
+        ax.legend([live, stored, target], (['scan actual', 'scan guardado del objetivo', 'objetivo'] if a.es else ['live scan', 'stored scan of the target', 'target']), loc='lower right', fontsize=8)
     ax.set_aspect('equal')
     ax.grid(alpha=0.3)
     ax.set_xlabel('x (m)')
@@ -187,6 +188,12 @@ def run_animation(a):
                 stored.set_offsets(place(goal, kfs[state['k']].points))
         clock.set_text(f't = {t - t0:5.1f} s')
 
+    if a.still:
+        for i in range(n):
+            frame(i)
+        fig.savefig(a.still, dpi=130)
+        faint.clear()
+
     anim = FuncAnimation(fig, frame, frames=n)
     writer = FFMpegWriter(fps=a.fps) if a.out.endswith('.mp4') else PillowWriter(fps=a.fps)
     anim.save(a.out, writer=writer, dpi=a.dpi)
@@ -219,6 +226,8 @@ def main():
     r.add_argument('--fps', type=int, default=12)
     r.add_argument('--dpi', type=int, default=70)
     r.add_argument('--title', default='')
+    r.add_argument('--still')
+    r.add_argument('--es', action='store_true')
     m = sub.add_parser('map')
     m.add_argument('map_dir')
     m.add_argument('out')

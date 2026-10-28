@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Plot a Teach against its Repeat from two bags and the Teach's map.
+Plot a Teach against its Repeat from two bags and, optionally, the Teach's map.
 
-  python3 plot_teach_vs_repeat.py teach_bag repeat_bag map_dir out.png [--ref /odom] [--loc /localization/odom]
+  python3 plot_teach_vs_repeat.py teach_bag repeat_bag out.png [--map map_dir] [--ref /odom] [--loc /localization/odom] [--es]
 
 Both bags need the reference topic (Gazebo's /odom, or /tb4_1/odom on the
-robot) and the localizer's odom. Run it with ROS sourced, so it can read bags.
+robot) and the localizer's odom. Without --map no keyframes are drawn. --es
+labels the figure in Spanish. Run it with ROS sourced, so it can read bags.
 """
 
 import argparse
@@ -67,12 +68,23 @@ def length(x, y):
     return float(np.sum(np.hypot(np.diff(x), np.diff(y))))
 
 
+LABELS = {
+    'en': ('taught (reference)', 'repeated (reference)', 'repeated (localizer)', 'keyframes',
+           'time since the Repeat started moving (s)', 'distance to the taught path (m)',
+           'mean {:.3f} m, max {:.3f} m', 'end error'),
+    'es': ('enseñado (referencia)', 'repetido (referencia)', 'repetido (localizador)', 'keyframes',
+           'tiempo desde que la repetición empezó a moverse (s)', 'distancia a la trayectoria enseñada (m)',
+           'media {:.3f} m, máx. {:.3f} m', 'error final'),
+}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('teach_bag')
     ap.add_argument('repeat_bag')
-    ap.add_argument('map_dir')
     ap.add_argument('out')
+    ap.add_argument('--map')
+    ap.add_argument('--es', action='store_true')
     ap.add_argument('--ref', default='/odom')
     ap.add_argument('--loc', default='/localization/odom')
     ap.add_argument('--title', default='')
@@ -81,8 +93,10 @@ def main():
     tt, tx, ty, tyaw = read_odom(a.teach_bag, a.ref)
     rt, rx, ry, ryaw = read_odom(a.repeat_bag, a.ref)
     lt, lx, ly, lyaw = read_odom(a.repeat_bag, a.loc)
-    with open(os.path.join(a.map_dir, 'map.json')) as f:
-        kfs = np.array([k['pose_odom'] for k in json.load(f)['keyframes']])
+    kfs = None
+    if a.map:
+        with open(os.path.join(a.map, 'map.json')) as f:
+            kfs = np.array([k['pose_odom'] for k in json.load(f)['keyframes']])
 
     # Everything in the frame of the Teach's first reference pose.
     origin = (tx[0], ty[0], tyaw[0])
@@ -101,14 +115,16 @@ def main():
     end_err = float(np.hypot(rx[-1] - tx[-1], ry[-1] - ty[-1]))
     mean, peak = float(d.mean()), float(d.max())
     print(f'taught length {length(tx, ty):.2f} m, repeated length {length(rx[keep], ry[keep]):.2f} m, '
-          f'{len(kfs)} keyframes')
+          f'{0 if kfs is None else len(kfs)} keyframes')
     print(f'distance to the taught path: mean {mean:.3f} m, max {peak:.3f} m; end error {end_err:.3f} m')
 
+    L = LABELS['es' if a.es else 'en']
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(11, 4.8), gridspec_kw={'width_ratios': [1.2, 1]})
-    ax1.plot(tx, ty, 'g-', lw=2.5, label='taught (reference)')
-    ax1.plot(rx[keep], ry[keep], 'b-', lw=1.5, label='repeated (reference)')
-    ax1.plot(lx, ly, 'r--', lw=1, label='repeated (localizer)')
-    ax1.plot(kfs[:, 0], kfs[:, 1], 'k.', ms=7, label='keyframes')
+    ax1.plot(tx, ty, 'g-', lw=2.5, label=L[0])
+    ax1.plot(rx[keep], ry[keep], 'b-', lw=1.5, label=L[1])
+    ax1.plot(lx, ly, 'r--', lw=1, label=L[2])
+    if kfs is not None:
+        ax1.plot(kfs[:, 0], kfs[:, 1], 'k.', ms=7, label=L[3])
     ax1.plot(tx[-1], ty[-1], 'gs', ms=8)
     ax1.plot(rx[-1], ry[-1], 'bx', ms=9)
     ax1.set_aspect('equal')
@@ -118,10 +134,10 @@ def main():
     ax1.legend(fontsize=8)
     ax2.plot(rt[keep] - t0, d, 'b-')
     ax2.grid(alpha=0.3)
-    ax2.set_xlabel('time since the Repeat started moving (s)')
-    ax2.set_ylabel('distance to the taught path (m)')
-    ax2.set_title(f'mean {mean:.3f} m, max {peak:.3f} m', fontsize=10)
-    fig.suptitle(f'{a.title} end error {end_err:.3f} m'.strip())
+    ax2.set_xlabel(L[4])
+    ax2.set_ylabel(L[5])
+    ax2.set_title(L[6].format(mean, peak), fontsize=10)
+    fig.suptitle(f'{a.title} {L[7]} {end_err:.3f} m'.strip())
     fig.tight_layout()
     fig.savefig(a.out, dpi=130)
 
