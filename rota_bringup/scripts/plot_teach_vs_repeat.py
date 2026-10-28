@@ -88,6 +88,7 @@ def main():
     origin = (tx[0], ty[0], tyaw[0])
     tx, ty = to_frame(origin, tx, ty)
     rx, ry = to_frame(origin, rx, ry)
+    ryaw = ryaw - origin[2]
     # The localizer's odom starts at the identity where the Repeat started.
     i = np.searchsorted(rt, lt[0])
     lx, ly = from_frame((rx[i], ry[i], ryaw[i]), lx, ly)
